@@ -1,11 +1,8 @@
 import torch
-from diffusers import WanPipeline
 import re
+from diffusers import WanPipeline
 from safetensors.torch import load_file
-import os
-from huggingface_hub import snapshot_download
-import numpy as np
-from einops import repeat, reduce
+from huggingface_hub import hf_hub_download
 
 
 @torch.no_grad()
@@ -111,13 +108,14 @@ def name_convert(n: str):
     return n
 
 
-def load_vibt_weight(transformer, repo_path="Yuanshi/Bridge"):
-    repo_path = snapshot_download(repo_path)
-    tensors = load_file(
-        os.path.join(
-            repo_path, "stylization/run_20251103_235853/step-20000.safetensors"
-        )
-    )
+def load_vibt_weight(
+    transformer, repo_name="Yuanshi/Bridge", weight_path=None, local_path=None
+):
+    assert (
+        weight_path or local_path
+    ) is not None, "Either weight_path or local_path must be provided."
+
+    tensors = load_file(local_path or hf_hub_download(repo_name, weight_path))
 
     new_tensors = {}
 

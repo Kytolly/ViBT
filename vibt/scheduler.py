@@ -3,6 +3,10 @@ import torch
 
 
 class ViBTScheduler(UniPCMultistepScheduler):
+    def __init__(self, **kwargs):
+        super().__init__(**{**kwargs, "use_flow_sigmas": True})
+        self.set_parameters()
+
     def set_parameters(self, noise_scale=1.0, shift_gamma=5.0, seed=None):
         self.noise_scale = noise_scale
         self.config.flow_shift = shift_gamma

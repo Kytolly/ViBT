@@ -11,5 +11,6 @@ setup(
         "imageio",
         "imageio-ffmpeg",
         "einops",
+        "peft"
     ],
 )
