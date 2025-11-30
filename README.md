@@ -1,6 +1,4 @@
 # ViBT
-Vision Bridge Transformer (ViBT) — Vision Bridge Transformer at Scale
-
 <img src="./assets/main_1.jpg" width="100%" />
 <br>
 
