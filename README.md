@@ -1,87 +1,59 @@
 # ViBT
-Vision Bridge Transformer (ViBT) — Project README Template
+Vision Bridge Transformer (ViBT) — Vision Bridge Transformer at Scale
 
-<img src="./assets/demo/vibt_cover_placeholder.jpg" width="100%" />
+<img src="./assets/main_1.jpg" width="100%" />
 <br>
 
-<a href="https://huggingface.co/ORG_OR_USER/ViBT"><img src="https://img.shields.io/badge/🤗_HuggingFace-Model-ffbd45.svg" alt="HuggingFace Model"></a>
-<a href="https://huggingface.co/spaces/ORG_OR_USER/ViBT_Demo"><img src="https://img.shields.io/badge/🤗_HuggingFace-Demo-ffbd45.svg" alt="HuggingFace Demo"></a>
+<a href="https://yuanshi9815.github.io/ViBT_homepage"><img src="https://img.shields.io/badge/Web-Project Page-1d72b8.svg" alt="Project Page"></a>
 <a href="https://arxiv.org/abs/ARXIV_ID_PLACEHOLDER"><img src="https://img.shields.io/badge/arXiv-ViBT-A42C25.svg" alt="arXiv"></a>
+<a href="https://huggingface.co/spaces/Yuanshi/ViBT"><img src="https://img.shields.io/badge/🤗_HuggingFace-Demo-ffbd45.svg" alt="HuggingFace Demo"></a>
+<a href="https://huggingface.co/Yuanshi/ViBT"><img src="https://img.shields.io/badge/🤗_HuggingFace-Model-ffbd45.svg" alt="HuggingFace Model"></a>
 
-> **ViBT: TITLE_PLACEHOLDER**
+> **ViBT: Vision Bridge Transformer at Scale**
 > <br>
-> AUTHOR_1, AUTHOR_2, AUTHOR_3, AUTHOR_4, AUTHOR_5
+> Zhenxiong Tan, [Zeqing Wang](https://inv-wzq.github.io), [Xingyi Yang](https://adamdad.github.io), [Songhua Liu](https://huage001.github.io), [Xinchao Wang](https://sites.google.com/site/sitexinchaowang)
 > <br>
-> AFFILIATION / LAB_PLACEHOLDER
+> [xML Lab](https://sites.google.com/view/xml-nus), National University of Singapore; The Hong Kong Polytechnic University; Shanghai Jiao Tong University
 > <br>
 
 ## Features
-- **Key Idea 1**: One-line placeholder describing the main contribution.
-- **Key Idea 2**: One-line placeholder for capability (e.g., scaling, efficiency, quality).
-- **Key Idea 3**: One-line placeholder for application scope (e.g., vision-language, 3D, editing).
-- **Minimal Changes**: Placeholder for parameter efficiency or architectural simplicity.
+- **Bridge formulation**: Data-to-data trajectories between inputs and outputs instead of noise-to-data diffusion.
+- **Scaled transformers**: 20B and 1.3B parameter ViBT variants for image/video translation.
+- **Stabilized training**: Variance-stabilized velocity-matching objective for robust large-model optimization.
+- **Fast inference**: Removal of conditional tokens yields up to **4× faster** runs versus token-heavy baselines.
 
-## News
-- **YYYY-MM-DD**: Placeholder for initial code release (link to repo tag or commit).
-- **YYYY-MM-DD**: Placeholder for model checkpoint release (link to HF).
-- **YYYY-MM-DD**: Placeholder for demo launch (link to Space or video).
+<!-- ## News
+- **YYYY-MM-DD**: Initial code release (link to repo tag or commit) — placeholder.
+- **YYYY-MM-DD**: Model checkpoint release (HF) — placeholder.
+- **YYYY-MM-DD**: Demo launch (HF Space) — placeholder. -->
 
 ## Quick Start
 ### Setup (Optional)
 1. **Environment**
 ```bash
-conda create -n vibt python=3.12
-conda activate vibt
+conda create -n ViBT python=3.12
+conda activate ViBT
 ```
 2. **Install requirements**
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
-### Minimal usage example
-- Notebook placeholder: `examples/minimal_demo.ipynb`
-- Script placeholder:
-```bash
-python scripts/infer.py \
-  --model-id ORG_OR_USER/ViBT \
-  --prompt "PROMPT_PLACEHOLDER" \
-  --image input.jpg \
-  --output output.jpg
+### Examples
+- Image instruction-based editing and stylization: `examples/image_stylization.ipynb`
+- Video stylization: `examples/video_stylization.ipynb`
+- Video colorization: `examples/video_colorization.ipynb`
+- Video frame interpolation: `examples/video_frame_interpolation.ipynb`
+
+## Models and Training
+We keep different models for image and video tasks.
+
+- Image tasks (stylization, editing) are trained on [**Qwen-Image-Editing**](https://huggingface.co/Qwen/Qwen-Image-Edit).
+- Video tasks (stylization, colorization, frame interpolation) are trained on [**Wan2.1 1.3B**](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B).
+
+Training code is under development; we will add full instructions once released.
+
+## BibTeX
 ```
-
-## Generated Samples
-- Placeholder grid of qualitative results (subject-driven, editing, etc.).
-- Add sample prompts in a collapsible section once ready.
-
-## Models
-| Model ID (HF) | Base model | Description | Resolution |
-| ------------- | ---------- | ----------- | ---------- |
-| ORG_OR_USER/ViBT-BASE | BASE_MODEL | Placeholder for primary checkpoint | (H, W) |
-| ORG_OR_USER/ViBT-XL | BASE_MODEL | Placeholder for larger or higher-res variant | (H, W) |
-
-## Limitations
-1. Placeholder for known failure cases (e.g., humans, extreme resolutions).
-2. Placeholder for compatibility notes (e.g., works best with specific scheduler).
-3. Placeholder for data gaps or bias considerations.
-
-## Training
-- Placeholder link to training instructions: `train/README.md`
-- Placeholder bullet for custom dataset instructions.
-
-## To-do
-- [ ] Placeholder for adding evaluation scripts.
-- [ ] Placeholder for releasing additional checkpoints.
-- [ ] Placeholder for writing a detailed technical report.
-
-## Acknowledgment
-Placeholder for funding / compute acknowledgments (e.g., grant numbers, clusters).
-
-## Citation
-```
-@article{vibt2025placeholder,
-  title={ViBT: TITLE_PLACEHOLDER},
-  author={AUTHOR_1 and AUTHOR_2 and AUTHOR_3 and AUTHOR_4 and AUTHOR_5},
-  journal={arXiv preprint ARXIV_ID_PLACEHOLDER},
-  year={2025}
-}
+TBD
 ```
