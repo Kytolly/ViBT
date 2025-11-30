@@ -47,7 +47,7 @@ pip install -e .
 We keep different models for image and video tasks.
 
 - Image tasks (stylization, editing) are trained on [**Qwen-Image-Editing**](https://huggingface.co/Qwen/Qwen-Image-Edit).
-- Video tasks (stylization, colorization, frame interpolation) are trained on [**Wan2.1 1.3B**](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B).
+- Video tasks (stylization, depth-to-video, colorization, frame interpolation) are trained on [**Wan2.1 1.3B**](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B).
 
 Training code is under development; we will add full instructions once released.
 
