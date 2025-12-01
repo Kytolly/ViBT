@@ -3,7 +3,7 @@
 <br>
 
 <a href="https://yuanshi9815.github.io/ViBT_homepage"><img src="https://img.shields.io/badge/Web-Project Page-1d72b8.svg" alt="Project Page"></a>
-<a href="https://arxiv.org/abs/ARXIV_ID_PLACEHOLDER"><img src="https://img.shields.io/badge/arXiv-ViBT-A42C25.svg" alt="arXiv"></a>
+<a href="https://arxiv.org/abs/2511.23199"><img src="https://img.shields.io/badge/arXiv-ViBT-A42C25.svg" alt="arXiv"></a>
 <a href="https://huggingface.co/spaces/Yuanshi/ViBT"><img src="https://img.shields.io/badge/🤗_HuggingFace-Demo-ffbd45.svg" alt="HuggingFace Demo"></a>
 <a href="https://huggingface.co/Yuanshi/ViBT"><img src="https://img.shields.io/badge/🤗_HuggingFace-Model-ffbd45.svg" alt="HuggingFace Model"></a>
 
@@ -46,12 +46,17 @@ pip install -e .
 ## Models and Training
 We keep different models for image and video tasks.
 
-- Image tasks (stylization, editing) are trained on [**Qwen-Image-Editing**](https://huggingface.co/Qwen/Qwen-Image-Edit).
-- Video tasks (stylization, depth-to-video, colorization, frame interpolation) are trained on [**Wan2.1 1.3B**](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B).
+- Image tasks (stylization, editing) are trained on [Qwen-Image-Editing](https://huggingface.co/Qwen/Qwen-Image-Edit).
+- Video tasks (stylization, depth-to-video, colorization, frame interpolation) are trained on [Wan2.1 1.3B](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B).
 
 Training code is under development; we will add full instructions once released.
 
 ## BibTeX
 ```
-TBD
+@article{tan2025vision,
+  title={Vision Bridge Transformer at Scale},
+  author={Tan, Zhenxiong and Wang, Zeqing and Yang, Xingyi and Liu, Songhua and Wang, Xinchao},
+  journal={arXiv preprint arXiv:2511.23199},
+  year={2025}
+}
 ```
