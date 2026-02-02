@@ -9,17 +9,13 @@ from omegaconf import OmegaConf, DictConfig
 # 加载环境变量
 load_dotenv()
 DEBUG = os.getenv("DEBUG", "False").lower() == "true"
-
-# -----------------------------------------------------------------------------
-# 0. 路径定义
-# -----------------------------------------------------------------------------
-_CONFIGS_DIR = Path(__file__).resolve().parent      # .../configs
-_PACKAGE_DIR = _CONFIGS_DIR.parent                  # .../package_root
-_PROJECT_ROOT = _PACKAGE_DIR.parent                 # .../ (Repo Root)
+_VIBT_PACKAGE_DIR = Path(__file__).resolve().parent  # .../ViBT/vibt
+_PROJECT_ROOT = _VIBT_PACKAGE_DIR.parent             # .../ViBT
+_CONFIGS_DIR = _PROJECT_ROOT / "config"              # .../ViBT/config
 
 # 导出给其他模块使用
 globals()["PROJECT_ROOT"] = str(_PROJECT_ROOT)
-globals()["PACKAGE_DIR"] = str(_PACKAGE_DIR)
+globals()["PACKAGE_DIR"] = str(_VIBT_PACKAGE_DIR)
 globals()["CONFIG_DIR"] = str(_CONFIGS_DIR)
 
 # -----------------------------------------------------------------------------
@@ -29,6 +25,7 @@ globals()["CONFIG_DIR"] = str(_CONFIGS_DIR)
 @dataclass
 class ProjectConfig:
     name: str = "ViBT-Ego2Exo"
+    root: str = str(_PROJECT_ROOT)
     output_dir: str = "outputs/"
     logging_dir: str = "logs/"
 
@@ -90,10 +87,11 @@ def load_config(config_file_name: str = "config/video2video.yaml"):
     if p.is_absolute():
         if p.exists(): path_to_use = p
     else:
+        # 优先查找顺序
         candidates = [
             _PROJECT_ROOT / config_path,
-            _CONFIGS_DIR / config_path,
-            Path.cwd() / config_path
+            Path.cwd() / config_path,
+            _CONFIGS_DIR / Path(config_path).name
         ]
         
         for candidate in candidates:
@@ -102,9 +100,10 @@ def load_config(config_file_name: str = "config/video2video.yaml"):
                 break
 
     if path_to_use is None:
+        # Fallback 到默认位置
         path_to_use = _PROJECT_ROOT / config_file_name
         if not path_to_use.exists():
-             print(f"Warning: Config file '{config_path}' not found. Using default Schema values.")
+             print(f"Warning: Config file '{config_path}' not found at {path_to_use}. Using default Schema values.")
 
     # --- B. 加载 YAML 并 Merge Schema ---
     if path_to_use and path_to_use.exists():
@@ -123,8 +122,8 @@ def load_config(config_file_name: str = "config/video2video.yaml"):
         
         key = (key or "").lower()
         
-        # [核心修复] 移除了 "index"，防止 index.json 被错误解析为项目根目录文件
-        # 保留了 path, dir, file, root, output, log
+        # 关键词列表：包含 path, dir, file, root, output, log
+        # 且必须排除 index (防止 index.json 被修改)
         keywords = ["path", "dir", "file", "root", "output", "log"]
         
         if any(k in key for k in keywords): return True
@@ -139,8 +138,11 @@ def load_config(config_file_name: str = "config/video2video.yaml"):
         
         if isinstance(obj, str) and _is_path_like(parent_key, obj):
             try:
+                # 核心逻辑：相对路径 -> PROJECT_ROOT / 相对路径
                 abs_path = (_PROJECT_ROOT / obj).resolve()
-                return str(abs_path)
+                # 如果路径不存在（如新建的 output 目录），resolve() 可能不会按预期工作，
+                # 但只要它是基于 _PROJECT_ROOT 拼接的就没问题。
+                return str(_PROJECT_ROOT / obj) 
             except Exception:
                 return str(_PROJECT_ROOT / obj)
                 
