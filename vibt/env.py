@@ -57,9 +57,10 @@ class TrainingConfig:
     lr: float = 1e-4
     epochs: int = 20
     gradient_accumulation_steps: int = 4
-    save_interval: int = 1000
+    save_interval: int = 100
     log_interval: int = 10
     mixed_precision: str = "bf16"
+    resume_path: str = ""
 
 @dataclass
 class ViBTEnvConfig:

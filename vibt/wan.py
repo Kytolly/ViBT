@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import re
 from diffusers import WanPipeline
 from safetensors.torch import load_file
@@ -130,3 +131,92 @@ def load_vibt_weight(
                 param.shape == new_tensors[name].shape
             ), f"{name}: {param.shape} != {new_tensors[name].shape}"
             param.data = new_tensors[name].to(device=device, dtype=dtype)
+
+class WanModel(nn.Module):
+    def __init__(self, pretrained_model_path, device="cuda", dtype=torch.bfloat16):
+        super().__init__()
+        self.device = device
+        self.dtype = dtype
+        
+        print(f"Loading WanPipeline from {pretrained_model_path}...")
+        # 加载完整 Pipeline (VAE, TextEncoder, Transformer)
+        self.pipe = WanPipeline.from_pretrained(
+            pretrained_model_path, 
+            torch_dtype=dtype
+        ).to(device)
+        
+        # 为了方便访问，建立引用
+        self.vae = self.pipe.vae
+        self.text_encoder = self.pipe.text_encoder
+        self.tokenizer = self.pipe.tokenizer
+        self.transformer = self.pipe.transformer # 这是我们要训练的核心
+        
+        # 冻结 VAE 和 Text Encoder (ViBT 仅训练 Transformer)
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False) # 稍后在 Trainer 中开启 LoRA
+
+    @classmethod
+    def from_pretrained(cls, path, **kwargs):
+        return cls(path, **kwargs)
+
+    @torch.no_grad()
+    def encode(self, pixel_values):
+        """
+        将视频像素编码为 Latent。
+        Args:
+            pixel_values: [B, C, F, H, W] 范围 [-1, 1]
+        Returns:
+            latents: [B, C_out, F_out, H_out, W_out]
+        """
+        # Wan VAE 通常期望输入范围是 [-1, 1] (如果是基于 SD 的 VAE) 
+        # 或者 [0, 1]。Diffusers 的 image_processor 处理逻辑较复杂。
+        # 这里的 VAE (AutoencoderKLWan) encode 方法接受 [B, C, F, H, W]
+        # 我们假设输入已经是 Tensor 且在 device 上
+        
+        # 确保数据类型匹配
+        pixel_values = pixel_values.to(dtype=self.dtype, device=self.device)
+        
+        # VAE Encode
+        # Wan2.1 的 VAE encode 输出是分布，我们需要采样
+        if hasattr(self.vae, 'encode'):
+            dist = self.vae.encode(pixel_values).latent_dist
+            latents = dist.sample()
+        else:
+            raise NotImplementedError("Unknown VAE structure")
+
+        # 标准化 Latents (这也是 Diffusers pipeline 内部做的)
+        latents = (latents - self.vae.config.latents_mean) / self.vae.config.latents_std
+        return latents
+
+    @torch.no_grad()
+    def encode_prompt(self, prompts, max_length=512):
+        """编码文本提示"""
+        # 使用 Pipeline 内部的逻辑 (简化版)
+        prompt_embeds = self.pipe._get_text_embeddings(
+            prompt=prompts,
+            max_sequence_length=max_length
+        )
+        # prompt_embeds 通常是 tuple (context, negative_context)
+        # 训练时我们只需要 context
+        return prompt_embeds[0]
+
+    def forward(self, hidden_states, timestep, encoder_hidden_states):
+        """
+        Transformer 前向传播
+        Args:
+            hidden_states: Noisy Latents / Bridge State [B, C, F, H, W]
+            timestep: Time step tensor [B]
+            encoder_hidden_states: Text Embeddings [B, L, D]
+        """
+        # Wan Transformer 的输入参数
+        return self.transformer(
+            hidden_states=hidden_states,
+            timestep=timestep,
+            encoder_hidden_states=encoder_hidden_states,
+            return_dict=False
+        )[0] # 返回 (sample,)
+
+    def save_pretrained(self, save_directory):
+        """保存模型 (主要是 LoRA 权重)"""
+        self.pipe.save_pretrained(save_directory)
