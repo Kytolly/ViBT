@@ -1,5 +1,21 @@
 import os
 import sys
+import logging
+DETAILED_FORMAT = (
+    '%(asctime)s | '
+    '%(levelname)-s | '
+    '%(name)s | '
+    '%(filename)s:%(lineno)d | '
+    '%(funcName)s() | ' 
+    # 'PID:%(process)d | TID:%(thread)d | '
+    '%(message)s'
+)
+logging.basicConfig(
+    level=logging.INFO,
+    format=DETAILED_FORMAT,
+    datefmt='%Y-%m-%d %H:%M:%S',
+    force=True
+)
 
 # -----------------------------------------------------------------------------
 # 1. 路径 Hack: 确保能导入项目根目录下的模块
@@ -15,8 +31,6 @@ if project_root not in sys.path:
 # 2. 导入配置和训练器
 # -----------------------------------------------------------------------------
 try:
-    # 导入 vibt.env 时，它会自动读取 CONFIG_PATH 环境变量或默认 YAML
-    # 并生成全局单例 CONFIG 对象
     from vibt.env import CONFIG
     from vibt.train import ViBTTrainer
 except ImportError as e:

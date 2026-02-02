@@ -74,7 +74,7 @@ class ViBTEnvConfig:
 # 2. 配置加载逻辑
 # -----------------------------------------------------------------------------
 
-def load_config(config_file_name: str = "config/video2video.yml"):
+def load_config(config_file_name: str = "config/video2video.yaml"):
     """
     加载配置并将相对路径解析为相对于 PROJECT_ROOT 的绝对路径。
     """
