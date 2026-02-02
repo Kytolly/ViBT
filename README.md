@@ -51,6 +51,10 @@ We keep different models for image and video tasks.
 
 Training code is under development; we will add full instructions once released.
 
+```python
+python scripts/run_train.py
+```
+
 ## BibTeX
 ```
 @article{tan2025vision,
