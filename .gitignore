@@ -5,3 +5,5 @@
 dataset
 ViBT_safetensors/
 .env
+logs/
+outputs/

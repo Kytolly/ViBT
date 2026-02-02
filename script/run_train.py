@@ -33,7 +33,7 @@ def main():
     print(f"==================================================")
     print(f"   ViBT Training Launcher")
     print(f"==================================================")
-    print(f"📂 Project Root: {project_root}")
+    print(f"📂 Project Root: {CONFIG.project.root}")
     print(f"📄 Config File:  {os.getenv('CONFIG_PATH', 'Default')}")
     print(f"🔧 Experiment:   {CONFIG.project.name}")
     print(f"💾 Output Dir:   {CONFIG.project.output_dir}")
