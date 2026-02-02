@@ -5,9 +5,7 @@ project:
 
 model:
   path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B-Diffusers"
-  use_lora: True
-  lora_rank: 32
-  lora_alpha: 32
+  use_lora: False
 
 dataset:
   repo_id: "Kytolly/examples_Ego2ExoFollowCamera"

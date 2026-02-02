@@ -46,9 +46,14 @@ class ViBTTrainer:
             dtype=dtype
         )
         
-        # 4. 配置 LoRA
+        # 4. 配置训练模式
         if self.cfg.model.use_lora:
             self._setup_lora()
+        else:
+            # 解冻 Transformer 进行全量训练
+            logger.info("🔓 Unfreezing Transformer for Full-Parameter Training...")
+            for param in self.model.transformer.parameters():
+                param.requires_grad = True
             
         # 5. 准备优化器
         self.optimizer = torch.optim.AdamW(
