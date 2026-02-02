@@ -1,119 +1,127 @@
 import os
 import sys
 import torch
-import numpy as np
-from torchvision.utils import save_image
 from torch.utils.data import DataLoader
+from torchvision.utils import save_image
 
-# 将当前目录加入路径，确保能 import vibt
-sys.path.append(os.getcwd())
+# -----------------------------------------------------------------------------
+# 1. 环境设置：确保能导入项目模块
+# -----------------------------------------------------------------------------
+current_dir = os.path.dirname(os.path.abspath(__file__)) # .../ViBT/unittest
+project_root = os.path.dirname(current_dir)              # .../ViBT
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 try:
+    # 从 env.py 导入全局配置 (已包含绝对路径)
+    from vibt.env import CONFIG
+    # 导入数据集和选项类
     from vibt.dataset_wrapper import FollowBenchDatasetWrapper, Options
 except ImportError as e:
     print(f"❌ Import Error: {e}")
-    print("请确保脚本运行在项目根目录下，并且 vibt/ 文件夹中包含 __init__.py")
+    print("请确保在项目根目录下运行，且 vibt 包结构完整。")
     sys.exit(1)
 
-def check_paths(opt):
-    """预检查路径是否存在，避免 Dataset 内部报错难以调试"""
-    print(f"\n🔍 正在检查路径配置...")
-    
-    # 1. 检查 dataset 软链接
-    if not os.path.exists(opt.assets):
-        print(f"❌ 错误: 找不到数据集根目录 '{opt.assets}'。")
-        print(f"   请确保你已经执行了: ln -s /path/to/real/data {opt.assets}")
-        return False
-    
-    # 2. 检查 phase 目录 (例如 dataset/train)
-    phase_root = os.path.join(opt.assets, opt.phase)
-    if not os.path.exists(phase_root):
-        print(f"❌ 错误: 找不到 Phase 目录 '{phase_root}'。")
-        print(f"   请检查你的 FollowBench 数据集结构是否包含 '{opt.phase}' 文件夹。")
-        return False
-
-    # 3. 检查 index json
-    index_path = os.path.join(phase_root, opt.annotation)
-    if not os.path.exists(index_path):
-        print(f"❌ 错误: 找不到索引文件 '{index_path}'。")
-        print(f"   请确认 index.json 是否位于 '{phase_root}' 下。")
-        return False
-        
-    print("✅ 路径检查通过！")
-    return True
-
+# -----------------------------------------------------------------------------
+# 2. 工具函数
+# -----------------------------------------------------------------------------
 def denormalize(tensor):
-    """将归一化的 Tensor (-1, 1) 还原为 (0, 1) 用于保存查看"""
+    """
+    反归一化：将 [-1, 1] 的 Tensor 映射回 [0, 1] 以便可视化。
+    注意：您之前修改了 utils.py，现在的视频数据范围是 [-1, 1]。
+    """
     return tensor * 0.5 + 0.5
 
+# -----------------------------------------------------------------------------
+# 3. 主测试逻辑
+# -----------------------------------------------------------------------------
 def main():
-    # 1. 初始化配置
+    print(f"🚀 [Test] Starting Dataset Loading Test...")
+    print(f"   Config File: {os.getenv('CONFIG_PATH', 'Default (config/video2video.yml)')}")
+
+    # --- A. 配置映射 ---
+    # 将 env.py 中的 OmegaConf 配置映射到 dataset_wrapper.py 需要的 Options 对象
     opt = Options()
     
-    # 根据你的实际情况调整这些参数
-    opt.assets = "dataset"        # 你的软链接名称
-    opt.phase = "train"           # 你的数据文件夹名 (train/test)
-    opt.annotation = "index.json" # 你的索引文件名
-    opt.height = 512              # 测试分辨率
-    opt.width = 896               # 测试分辨率 (Wan2.1 推荐 16倍数)
-    opt.clip_len = 16             # 测试帧数 (避免加载太慢)
+    # 路径参数 (env.py 已经处理成了绝对路径)
+    opt.assets = CONFIG.dataset.root
+    opt.phase = CONFIG.dataset.phase
+    opt.annotation = CONFIG.dataset.index
+    
+    # 兼容性处理：防止 dataset_wrapper 内部使用 .index 而非 .annotation
+    # (根据之前的代码分析，dataset_wrapper._load_index 可能使用了 self.opt.index)
+    opt.index = CONFIG.dataset.index
 
-    # 临时修复：如果你还没修改源码中的 bug，这就动态修复一下
-    if not hasattr(opt, 'index'):
-        opt.index = opt.annotation
+    # 尺寸参数
+    opt.height = CONFIG.dataset.height
+    opt.width = CONFIG.dataset.width
+    opt.clip_len = 16  # 测试时只读取 16 帧以加快速度
+    
+    print(f"\n📋 Configuration:")
+    print(f"   Root Path:   {opt.assets}")
+    print(f"   Index File:  {opt.annotation}")
+    print(f"   Phase:       {opt.phase}")
+    print(f"   Resolution:  {opt.height}x{opt.width}")
 
-    if not check_paths(opt):
-        return
-
-    print(f"\n🚀 开始初始化 Dataset...")
+    # --- B. 初始化数据集 ---
+    print(f"\n🔄 Initializing Dataset...")
     try:
         dataset = FollowBenchDatasetWrapper(opt)
-        print(f"✅ Dataset 初始化成功，共发现 {len(dataset)} 个样本。")
+        print(f"✅ Dataset initialized successfully.")
+        print(f"   Total Samples: {len(dataset)}")
     except Exception as e:
-        print(f"❌ Dataset 初始化失败: {e}")
+        print(f"❌ Failed to initialize dataset: {e}")
         import traceback
         traceback.print_exc()
         return
 
-    # 2. 测试 DataLoader
-    print(f"\n🔄 正在尝试读取第一个 Batch...")
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0) # num_workers=0 方便调试报错
+    if len(dataset) == 0:
+        print("⚠️ Warning: Dataset is empty! Please check your index.json and paths.")
+        return
+
+    # --- C. 测试 DataLoader 读取 ---
+    print(f"\n🔄 Fetching first batch...")
+    loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0) # num_workers=0 方便调试
 
     try:
-        for i, batch in enumerate(dataloader):
-            vid_id = batch['video_id'][0]
-            ego_video = batch['ego_video']
-            exo_video = batch['exo_video']
-            ref_image = batch['ref_image']
+        batch = next(iter(loader))
+        
+        # 提取数据
+        vid_id = batch['video_id'][0]
+        ego_video = batch['ego_video'] # Expect: [B, T, C, H, W] due to stack
+        exo_video = batch['exo_video']
+        ref_image = batch['ref_image'] # Expect: [B, C, H, W]
 
-            print(f"\n✅ 成功加载样本 ID: {vid_id}")
-            print(f"   - Ego Video Shape: {ego_video.shape} (Expect: [B, T, C, H, W] or [B, C, T, H, W])")
-            print(f"   - Exo Video Shape: {exo_video.shape}")
-            print(f"   - Ref Image Shape: {ref_image.shape}")
+        print(f"✅ Batch loaded successfully!")
+        print(f"   Video ID:    {vid_id}")
+        print(f"   Ego Shape:   {ego_video.shape}")
+        print(f"   Exo Shape:   {exo_video.shape}")
+        print(f"   Ref Shape:   {ref_image.shape}")
 
-            # 检查是否有全 0 数据 (意味着加载失败被 try-except 捕获并返回了 zeros)
-            if torch.all(ego_video == 0):
-                print("⚠️ 警告: Ego Video 全为 0，说明视频文件读取失败 (utils.load_video_to_device 出错)。")
-                print("   请检查 utils.py 中的视频读取逻辑或文件路径是否正确。")
-            
-            # 保存一帧用于验证
-            os.makedirs("debug_output", exist_ok=True)
-            
-            # 取第一帧 (假设形状是 [B, T, C, H, W])
-            if ego_video.dim() == 5:
-                frame_tensor = ego_video[0, 0] # T=0
-            else:
-                # 假设形状是 [B, C, T, H, W]
-                frame_tensor = ego_video[0, :, 0] 
+        # 检查数值范围 (简单抽样)
+        print(f"   Ego Range:   [{ego_video.min():.3f}, {ego_video.max():.3f}] (Expected approx [-1, 1])")
+        
+        # --- D. 保存可视化结果 ---
+        os.makedirs("debug_output", exist_ok=True)
+        save_path = f"debug_output/test_{vid_id}.png"
+        
+        # 取第一帧进行保存
+        # DataLoader 堆叠后形状通常是 [B, T, C, H, W]
+        # 我们取 Batch 0, Frame 0 -> [C, H, W]
+        if ego_video.dim() == 5:
+            # 假设 utils.load_video_to_device 返回 [T, C, H, W]
+            frame_tensor = ego_video[0, 0] 
+        else:
+            # 备用情况
+            frame_tensor = ego_video[0]
 
-            save_path = f"debug_output/test_{vid_id}.png"
-            save_image(denormalize(frame_tensor), save_path)
-            print(f"📸 已保存测试帧到: {save_path} (请查看图像是否正常)")
+        # 反归一化并保存
+        save_image(denormalize(frame_tensor), save_path)
+        print(f"\n📸 Saved test frame to: {save_path}")
+        print(f"   请检查图片：画面应清晰、色彩正常 (不应泛白或全黑)。")
 
-            break # 只测试一个
-            
     except Exception as e:
-        print(f"❌ 读取数据时发生错误: {e}")
+        print(f"❌ Error during batch fetching: {e}")
         import traceback
         traceback.print_exc()
 
