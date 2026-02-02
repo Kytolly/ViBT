@@ -191,33 +191,33 @@ class WanModel(nn.Module):
         return latents
 
     @torch.no_grad()
-    def encode_prompt(self, prompts, max_length=512):
-        """编码文本提示"""
-        # 使用 Pipeline 内部的逻辑 (简化版)
-        prompt_embeds = self.pipe._get_text_embeddings(
-            prompt=prompts,
-            max_sequence_length=max_length
+    def encode_prompt(self, prompts: list[str], max_length: int = 512):
+        """
+        显式编码文本提示，不依赖 Pipeline 的私有方法。
+        """
+        # 1. Tokenize
+        # Wan2.1 使用 T5 Tokenizer
+        text_inputs = self.tokenizer(
+            prompts,
+            padding="max_length",
+            max_length=max_length,
+            truncation=True,
+            return_tensors="pt"
         )
-        # prompt_embeds 通常是 tuple (context, negative_context)
-        # 训练时我们只需要 context
-        return prompt_embeds[0]
+        
+        # 2. 搬运到 GPU
+        text_input_ids = text_inputs.input_ids.to(self.device)
+        attention_mask = text_inputs.attention_mask.to(self.device) # T5 通常需要 mask
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states):
-        """
-        Transformer 前向传播
-        Args:
-            hidden_states: Noisy Latents / Bridge State [B, C, F, H, W]
-            timestep: Time step tensor [B]
-            encoder_hidden_states: Text Embeddings [B, L, D]
-        """
-        # Wan Transformer 的输入参数
-        return self.transformer(
-            hidden_states=hidden_states,
-            timestep=timestep,
-            encoder_hidden_states=encoder_hidden_states,
-            return_dict=False
-        )[0] # 返回 (sample,)
-
-    def save_pretrained(self, save_directory):
-        """保存模型 (主要是 LoRA 权重)"""
-        self.pipe.save_pretrained(save_directory)
+        # 3. 编码 (T5 Encoder)
+        # output[0] 是 last_hidden_state
+        prompt_embeds = self.text_encoder(
+            text_input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=False
+        )[0]
+        
+        # 4. 数据类型转换 (确保匹配 Transformer 的 dtype，如 bf16)
+        prompt_embeds = prompt_embeds.to(dtype=self.dtype)
+        
+        return prompt_embeds
