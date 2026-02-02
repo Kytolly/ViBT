@@ -51,6 +51,8 @@ class ViBTTrainer:
             self._setup_lora()
         else:
             # 解冻 Transformer 进行全量训练
+            if self.cfg.training.gradient_checkpointing:
+                self.model.transformer.enable_gradient_checkpointing()
             logger.info("🔓 Unfreezing Transformer for Full-Parameter Training...")
             for param in self.model.transformer.parameters():
                 param.requires_grad = True
@@ -156,7 +158,7 @@ class ViBTTrainer:
         """恢复训练逻辑"""
         logger.info(f"🔄 Resuming training from {checkpoint_path}...")
         
-        # 加载 LoRA
+        # 加载权重
         adapter_path = os.path.join(checkpoint_path, "adapter_model.bin")
         if os.path.exists(adapter_path):
             adapters_weights = torch.load(adapter_path, map_location=self.device)
@@ -170,7 +172,7 @@ class ViBTTrainer:
                 set_peft_model_state_dict(self.model.transformer, adapters_weights)
                 logger.info("   ✅ Loaded LoRA weights (safetensors).")
             else:
-                logger.warning(f"   ⚠️ LoRA weights not found, starting random init.")
+                logger.warning(f"   ⚠️ weights not found, starting random init.")
 
         # 加载优化器
         optimizer_path = os.path.join(checkpoint_path, "optimizer.pt")

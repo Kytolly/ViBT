@@ -7,6 +7,100 @@ from huggingface_hub import hf_hub_download
 import logging
 logger = logging.getLogger(__name__)
 
+class WanModel(nn.Module):
+    def __init__(self, pretrained_model_path, device="cuda", dtype=torch.bfloat16):
+        super().__init__()
+        self.device = device
+        self.dtype = dtype
+        
+        print(f"Loading WanPipeline from {pretrained_model_path}...")
+        self.pipe = WanPipeline.from_pretrained(
+            pretrained_model_path, 
+            torch_dtype=dtype
+        ).to(device)
+        
+        self.vae = self.pipe.vae
+        self.text_encoder = self.pipe.text_encoder
+        self.tokenizer = self.pipe.tokenizer
+        self.transformer = self.pipe.transformer
+        
+        # 默认冻结组件 (Transformer会在train.py中根据需要解冻)
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+
+    @classmethod
+    def from_pretrained(cls, path, **kwargs):
+        return cls(path, **kwargs)
+
+    @torch.no_grad()
+    def encode(self, pixel_values):
+        """Encode video frames to normalized latents."""
+        pixel_values = pixel_values.to(dtype=self.vae.dtype, device=self.device)
+        
+        # VAE Encode
+        dist = self.vae.encode(pixel_values).latent_dist
+        latents = dist.sample()
+
+        # [核心修复] 将 list 转换为 tensor，并调整 shape 用于广播
+        # latents: [B, C, F, H, W]
+        # mean/std: [C] -> [1, C, 1, 1, 1]
+        latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_std = torch.tensor(self.vae.config.latents_std).view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
+        
+        latents = (latents - latents_mean) / latents_std
+        return latents
+
+    @torch.no_grad()
+    def decode(self, latents):
+        """Decode normalized latents back to video frames."""
+        latents = latents.to(dtype=self.vae.dtype)
+        
+        # [核心修复] 同样需要转换
+        latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_std = torch.tensor(self.vae.config.latents_std).view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
+        
+        latents = latents * latents_std + latents_mean
+        
+        # VAE Decode
+        video = self.vae.decode(latents, return_dict=False)[0]
+        return video
+
+    @torch.no_grad()
+    def encode_prompt(self, prompts: list[str], max_length: int = 512):
+        """
+        显式编码文本提示
+        """
+        text_inputs = self.tokenizer(
+            prompts,
+            padding="max_length",
+            max_length=max_length,
+            truncation=True,
+            return_tensors="pt"
+        )
+        
+        text_input_ids = text_inputs.input_ids.to(self.device)
+        attention_mask = text_inputs.attention_mask.to(self.device)
+
+        prompt_embeds = self.text_encoder(
+            text_input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=False
+        )[0]
+        
+        prompt_embeds = prompt_embeds.to(dtype=self.dtype)
+        
+        return prompt_embeds
+
+    def forward(self, hidden_states, timestep, encoder_hidden_states):
+        """Transformer Forward Pass"""
+        return self.transformer(
+            hidden_states=hidden_states,
+            timestep=timestep,
+            encoder_hidden_states=encoder_hidden_states,
+            return_dict=False
+        )[0]
+
 @torch.no_grad()
 def encode_video(pipe: WanPipeline, video_frames):
     video_tensor = pipe.video_processor.preprocess_video(video_frames).to(
@@ -132,92 +226,3 @@ def load_vibt_weight(
                 param.shape == new_tensors[name].shape
             ), f"{name}: {param.shape} != {new_tensors[name].shape}"
             param.data = new_tensors[name].to(device=device, dtype=dtype)
-
-class WanModel(nn.Module):
-    def __init__(self, pretrained_model_path, device="cuda", dtype=torch.bfloat16):
-        super().__init__()
-        self.device = device
-        self.dtype = dtype
-        
-        logger.info(f"Loading WanPipeline from {pretrained_model_path}...")
-        # 加载完整 Pipeline (VAE, TextEncoder, Transformer)
-        self.pipe = WanPipeline.from_pretrained(
-            pretrained_model_path, 
-            torch_dtype=dtype
-        ).to(device)
-        
-        # 为了方便访问，建立引用
-        self.vae = self.pipe.vae
-        self.text_encoder = self.pipe.text_encoder
-        self.tokenizer = self.pipe.tokenizer
-        self.transformer = self.pipe.transformer # 这是我们要训练的核心
-        
-        # 冻结 VAE 和 Text Encoder (ViBT 仅训练 Transformer)
-        self.vae.requires_grad_(False)
-        self.text_encoder.requires_grad_(False)
-        self.transformer.requires_grad_(False) # 稍后在 Trainer 中开启 LoRA
-
-    @classmethod
-    def from_pretrained(cls, path, **kwargs):
-        return cls(path, **kwargs)
-
-    @torch.no_grad()
-    def encode(self, pixel_values):
-        """
-        将视频像素编码为 Latent。
-        Args:
-            pixel_values: [B, C, F, H, W] 范围 [-1, 1]
-        Returns:
-            latents: [B, C_out, F_out, H_out, W_out]
-        """
-        # Wan VAE 通常期望输入范围是 [-1, 1] (如果是基于 SD 的 VAE) 
-        # 或者 [0, 1]。Diffusers 的 image_processor 处理逻辑较复杂。
-        # 这里的 VAE (AutoencoderKLWan) encode 方法接受 [B, C, F, H, W]
-        # 我们假设输入已经是 Tensor 且在 device 上
-        
-        # 确保数据类型匹配
-        pixel_values = pixel_values.to(dtype=self.dtype, device=self.device)
-        
-        # VAE Encode
-        # Wan2.1 的 VAE encode 输出是分布，我们需要采样
-        if hasattr(self.vae, 'encode'):
-            dist = self.vae.encode(pixel_values).latent_dist
-            latents = dist.sample()
-        else:
-            raise NotImplementedError("Unknown VAE structure")
-
-        # 标准化 Latents (这也是 Diffusers pipeline 内部做的)
-        latents = (latents - self.vae.config.latents_mean) / self.vae.config.latents_std
-        return latents
-
-    @torch.no_grad()
-    def encode_prompt(self, prompts: list[str], max_length: int = 512):
-        """
-        显式编码文本提示，不依赖 Pipeline 的私有方法。
-        """
-        # 1. Tokenize
-        # Wan2.1 使用 T5 Tokenizer
-        text_inputs = self.tokenizer(
-            prompts,
-            padding="max_length",
-            max_length=max_length,
-            truncation=True,
-            return_tensors="pt"
-        )
-        
-        # 2. 搬运到 GPU
-        text_input_ids = text_inputs.input_ids.to(self.device)
-        attention_mask = text_inputs.attention_mask.to(self.device) # T5 通常需要 mask
-
-        # 3. 编码 (T5 Encoder)
-        # output[0] 是 last_hidden_state
-        prompt_embeds = self.text_encoder(
-            text_input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=False
-        )[0]
-        
-        # 4. 数据类型转换 (确保匹配 Transformer 的 dtype，如 bf16)
-        prompt_embeds = prompt_embeds.to(dtype=self.dtype)
-        
-        return prompt_embeds

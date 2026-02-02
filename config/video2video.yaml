@@ -1,7 +1,8 @@
 project:
   name: "ViBT-Ego2Exo"
-  output_dir: "outputs/"
-  logging_dir: "logs/"
+  root: "/opt/liblibai-models/user-workspace2/users/xqy/project/ViBT"
+  output_dir: "outputs/video2video"
+  logging_dir: "logs"
 
 model:
   path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B-Diffusers"
@@ -16,15 +17,16 @@ dataset:
   stride: 4            
   height: 480  
   width: 832
-  batch_size: 4                                      
+  batch_size: 1                                      
   serial_batches: True                             
   num_workers: 4
 
 training:
   lr: 1e-4
   epochs: 20
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 4
   save_interval: 100  # steps
   log_interval: 10     # steps
   mixed_precision: "bf16"
+  gradient_checkpointing: True
   instruction: "Transform the view from ego-centric to third-person perspective"

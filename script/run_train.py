@@ -16,16 +16,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
     force=True
 )
-
-# -----------------------------------------------------------------------------
-# 1. 路径 Hack: 确保能导入项目根目录下的模块
-# -----------------------------------------------------------------------------
-# scripts/run_train.py -> scripts/ -> PROJECT_ROOT
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-
-if project_root not in sys.path:
-    sys.path.append(project_root)
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # 2. 导入配置和训练器
