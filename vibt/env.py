@@ -46,6 +46,7 @@ class DatasetConfig:
     index: str = "index.json"
     phase: str = "train"
     clip_len: int = 600
+    stride: int = 4
     height: int = 704
     width: int = 1280
     batch_size: int = 1

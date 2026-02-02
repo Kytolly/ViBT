@@ -14,7 +14,8 @@ dataset:
   root: "/opt/liblibai-models/user-workspace2/dataset/ego/FollowBench"
   index: "index.json"
   phase: "train"         
-  clip_len: 49            
+  clip_len: 49
+  stride: 4            
   height: 480  
   width: 832
   batch_size: 4                                      

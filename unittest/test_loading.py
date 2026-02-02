@@ -1,127 +1,155 @@
 import os
 import sys
 import torch
+import numpy as np
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
+from tqdm import tqdm
 
 # -----------------------------------------------------------------------------
-# 1. 环境设置：确保能导入项目模块
+# 1. 环境设置 Hack
 # -----------------------------------------------------------------------------
-current_dir = os.path.dirname(os.path.abspath(__file__)) # .../ViBT/unittest
+current_dir = os.path.dirname(os.path.abspath(__file__)) # .../unittest
 project_root = os.path.dirname(current_dir)              # .../ViBT
 if project_root not in sys.path:
     sys.path.append(project_root)
 
 try:
-    # 从 env.py 导入全局配置 (已包含绝对路径)
     from vibt.env import CONFIG
-    # 导入数据集和选项类
     from vibt.dataset_wrapper import FollowBenchDatasetWrapper, Options
 except ImportError as e:
     print(f"❌ Import Error: {e}")
-    print("请确保在项目根目录下运行，且 vibt 包结构完整。")
     sys.exit(1)
 
 # -----------------------------------------------------------------------------
-# 2. 工具函数
+# 2. 辅助工具
 # -----------------------------------------------------------------------------
 def denormalize(tensor):
-    """
-    反归一化：将 [-1, 1] 的 Tensor 映射回 [0, 1] 以便可视化。
-    注意：您之前修改了 utils.py，现在的视频数据范围是 [-1, 1]。
-    """
+    """[-1, 1] -> [0, 1]"""
     return tensor * 0.5 + 0.5
 
+def check_tensor(name, tensor, expected_range=(-1, 1)):
+    """检查 Tensor 的数值健康状况"""
+    min_val = tensor.min().item()
+    max_val = tensor.max().item()
+    has_nan = torch.isnan(tensor).any().item()
+    has_inf = torch.isinf(tensor).any().item()
+    
+    status = "✅"
+    if has_nan or has_inf:
+        status = "❌ NAN/INF"
+    elif min_val < expected_range[0] - 0.1 or max_val > expected_range[1] + 0.1:
+        status = "⚠️ Range Warn"
+        
+    print(f"   - {name}: Shape={list(tensor.shape)} | Range=[{min_val:.3f}, {max_val:.3f}] | {status}")
+    return not (has_nan or has_inf)
+
 # -----------------------------------------------------------------------------
-# 3. 主测试逻辑
+# 3. 核心测试逻辑
 # -----------------------------------------------------------------------------
 def main():
-    print(f"🚀 [Test] Starting Dataset Loading Test...")
-    print(f"   Config File: {os.getenv('CONFIG_PATH', 'Default (config/video2video.yml)')}")
-
-    # --- A. 配置映射 ---
-    # 将 env.py 中的 OmegaConf 配置映射到 dataset_wrapper.py 需要的 Options 对象
-    opt = Options()
+    print(f"==================================================")
+    print(f"   ViBT Dataset Detailed Inspection")
+    print(f"==================================================")
     
-    # 路径参数 (env.py 已经处理成了绝对路径)
+    # 1. 打印配置
+    print(f"📋 Configuration:")
+    print(f"   Root:       {CONFIG.dataset.root}")
+    print(f"   Index:      {CONFIG.dataset.index}")
+    print(f"   Clip Len:   {CONFIG.dataset.clip_len} (Target Frames)")
+    print(f"   Resolution: {CONFIG.dataset.height}x{CONFIG.dataset.width}")
+    
+    # 2. 初始化 Dataset
+    print(f"\n🔄 Initializing Dataset...")
+    opt = Options()
+    # 映射配置
     opt.assets = CONFIG.dataset.root
     opt.phase = CONFIG.dataset.phase
     opt.annotation = CONFIG.dataset.index
-    
-    # 兼容性处理：防止 dataset_wrapper 内部使用 .index 而非 .annotation
-    # (根据之前的代码分析，dataset_wrapper._load_index 可能使用了 self.opt.index)
     opt.index = CONFIG.dataset.index
-
-    # 尺寸参数
     opt.height = CONFIG.dataset.height
     opt.width = CONFIG.dataset.width
-    opt.clip_len = 16  # 测试时只读取 16 帧以加快速度
+    opt.clip_len = CONFIG.dataset.clip_len
+    # 强制设置用于测试的参数
+    opt.batch_size = 2 # 关键：测试 Batch 堆叠
     
-    print(f"\n📋 Configuration:")
-    print(f"   Root Path:   {opt.assets}")
-    print(f"   Index File:  {opt.annotation}")
-    print(f"   Phase:       {opt.phase}")
-    print(f"   Resolution:  {opt.height}x{opt.width}")
-
-    # --- B. 初始化数据集 ---
-    print(f"\n🔄 Initializing Dataset...")
     try:
         dataset = FollowBenchDatasetWrapper(opt)
-        print(f"✅ Dataset initialized successfully.")
-        print(f"   Total Samples: {len(dataset)}")
+        print(f"✅ Dataset initialized. Total samples: {len(dataset)}")
     except Exception as e:
-        print(f"❌ Failed to initialize dataset: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Dataset Init Failed: {e}")
         return
 
     if len(dataset) == 0:
-        print("⚠️ Warning: Dataset is empty! Please check your index.json and paths.")
+        print("❌ Dataset is empty.")
         return
 
-    # --- C. 测试 DataLoader 读取 ---
-    print(f"\n🔄 Fetching first batch...")
-    loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0) # num_workers=0 方便调试
-
+    # 3. 单样本检查 (Single Sample Inspection)
+    print(f"\n🔍 [Check 1] Single Sample Inspection (Index 0)...")
     try:
-        batch = next(iter(loader))
+        sample = dataset[0]
+        vid_id = sample['video_id']
+        ego = sample['ego_video']
+        exo = sample['exo_video']
         
-        # 提取数据
-        vid_id = batch['video_id'][0]
-        ego_video = batch['ego_video'] # Expect: [B, T, C, H, W] due to stack
-        exo_video = batch['exo_video']
-        ref_image = batch['ref_image'] # Expect: [B, C, H, W]
-
-        print(f"✅ Batch loaded successfully!")
-        print(f"   Video ID:    {vid_id}")
-        print(f"   Ego Shape:   {ego_video.shape}")
-        print(f"   Exo Shape:   {exo_video.shape}")
-        print(f"   Ref Shape:   {ref_image.shape}")
-
-        # 检查数值范围 (简单抽样)
-        print(f"   Ego Range:   [{ego_video.min():.3f}, {ego_video.max():.3f}] (Expected approx [-1, 1])")
+        print(f"   ID: {vid_id}")
+        check_tensor("Ego Video", ego)
+        check_tensor("Exo Video", exo)
         
-        # --- D. 保存可视化结果 ---
-        os.makedirs("debug_output", exist_ok=True)
-        save_path = f"debug_output/test_{vid_id}.png"
-        
-        # 取第一帧进行保存
-        # DataLoader 堆叠后形状通常是 [B, T, C, H, W]
-        # 我们取 Batch 0, Frame 0 -> [C, H, W]
-        if ego_video.dim() == 5:
-            # 假设 utils.load_video_to_device 返回 [T, C, H, W]
-            frame_tensor = ego_video[0, 0] 
+        # 验证帧数是否等于 clip_len
+        if ego.shape[0] != opt.clip_len:
+            print(f"   ❌ Frame count mismatch! Expected {opt.clip_len}, got {ego.shape[0]}")
         else:
-            # 备用情况
-            frame_tensor = ego_video[0]
-
-        # 反归一化并保存
-        save_image(denormalize(frame_tensor), save_path)
-        print(f"\n📸 Saved test frame to: {save_path}")
-        print(f"   请检查图片：画面应清晰、色彩正常 (不应泛白或全黑)。")
-
+            print(f"   ✅ Frame count matches clip_len ({opt.clip_len}).")
+            
     except Exception as e:
-        print(f"❌ Error during batch fetching: {e}")
+        print(f"❌ Single sample load failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # 4. Batch Collate 检查 (DataLoader Test)
+    print(f"\nmic [Check 2] DataLoader Batch Collate Test (Batch Size = 2)...")
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=2, 
+        shuffle=True, # Shuffle to mix different length videos
+        num_workers=0 # Debug mode
+    )
+    
+    try:
+        batch = next(iter(dataloader))
+        print("✅ DataLoader successfully collated a batch!")
+        
+        ego_batch = batch['ego_video'] # Expect [B, T, C, H, W]
+        print(f"   Batch Shape: {ego_batch.shape}")
+        
+        if ego_batch.shape[0] != 2:
+            print(f"   ⚠️ Expected batch size 2, got {ego_batch.shape[0]} (Maybe dataset too small?)")
+            
+        # 5. 可视化检查
+        print(f"\n🖼️ [Check 3] Visual Inspection...")
+        os.makedirs("debug_output", exist_ok=True)
+        
+        # 取第一个样本的第一帧
+        # Layout: [B, T, C, H, W] -> [C, H, W]
+        frame0_tensor = ego_batch[0, 0] 
+        save_path = "debug_output/debug_frame_start.png"
+        save_image(denormalize(frame0_tensor), save_path)
+        print(f"   Saved start frame to: {save_path}")
+        
+        # 取第一个样本的最后一帧 (检查是否黑屏或异常)
+        frame_end_tensor = ego_batch[0, -1]
+        save_path_end = "debug_output/debug_frame_end.png"
+        save_image(denormalize(frame_end_tensor), save_path_end)
+        print(f"   Saved end frame to:   {save_path_end}")
+        
+        print("\n✅ All Checks Passed! You are ready to train.")
+        
+    except RuntimeError as e:
+        print(f"❌ DataLoader Collate Failed: {e}")
+        print("   Hint: This usually means video frames are not unified. Did you apply the 'max_frames' fix in utils.py?")
+    except Exception as e:
+        print(f"❌ Unknown Error: {e}")
         import traceback
         traceback.print_exc()
 
