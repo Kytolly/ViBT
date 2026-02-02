@@ -111,7 +111,7 @@ class ViBTTrainer:
             bias="none"
         )
         self.model.transformer = get_peft_model(self.model.transformer, lora_config)
-        self.model.transformer.logger.info_trainable_parameters()
+        self.model.transformer.print_trainable_parameters()
 
     def _setup_dataloader(self):
         """初始化数据集"""
