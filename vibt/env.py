@@ -61,6 +61,7 @@ class TrainingConfig:
     log_interval: int = 10
     mixed_precision: str = "bf16"
     resume_path: str = ""
+    instruction: str = "Transform the view from ego-centric to third-person perspective"
 
 @dataclass
 class ViBTEnvConfig:

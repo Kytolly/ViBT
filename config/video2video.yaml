@@ -4,9 +4,9 @@ project:
   logging_dir: "logs/"
 
 model:
-  path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B"
+  path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B-Diffusers"
   use_lora: True
-  lora_rank: 16
+  lora_rank: 32
   lora_alpha: 32
 
 dataset:
@@ -14,17 +14,18 @@ dataset:
   root: "/opt/liblibai-models/user-workspace2/dataset/ego/FollowBench"
   index: "index.json"
   phase: "train"         
-  clip_len: 600            
-  height: 704   
-  width: 1280
-  batch_size: 1                                      
+  clip_len: 49            
+  height: 480  
+  width: 832
+  batch_size: 4                                      
   serial_batches: True                             
   num_workers: 4
 
 training:
   lr: 1e-4
   epochs: 20
-  gradient_accumulation_steps: 4
-  save_interval: 1000  # steps
+  gradient_accumulation_steps: 1
+  save_interval: 100  # steps
   log_interval: 10     # steps
   mixed_precision: "bf16"
+  instruction: "Transform the view from ego-centric to third-person perspective"

@@ -2,6 +2,8 @@ import torch
 import os
 import torchvision
 from diffusers.utils import export_to_video
+import logging
+logger = logging.getLogger(__name__)
 
 # 导入项目模块
 from vibt.utils import load_video_to_device
@@ -23,7 +25,7 @@ def generate_vibt(
     # 1. 预处理源视频 (关键修正)
     # 必须使用 vibt.utils 加载，以确保归一化范围是 [-1, 1]
     # 如果使用 torchvision 原生读取，范围不一致会导致生成结果异常
-    print(f"🎬 Loading source video: {source_video_path}")
+    logger.info(f"🎬 Loading source video: {source_video_path}")
     source_pixel = load_video_to_device(
         source_video_path, 
         target_size=target_size, 
@@ -44,7 +46,7 @@ def generate_vibt(
         # model.encode 会处理 [-1, 1] 到 Latent 的转换
         z_curr = model.encode(source_pixel)
         
-        print(f"🔄 Starting Euler integration ({steps} steps)...")
+        logger.info(f"🔄 Starting Euler integration ({steps} steps)...")
         
         # 4. Euler 积分循环 (Bridge Matching Trajectory)
         # 从 t=0 (Ego) -> t=1 (Exo)
@@ -67,7 +69,7 @@ def generate_vibt(
             z_curr = z_curr + pred_v * dt
             
         # 5. 解码 -> z_1 (End State)
-        print("Decode latents...")
+        logger.info("Decode latents...")
         output_pixel = model.decode(z_curr)
         
     return output_pixel

@@ -60,7 +60,7 @@ class FollowBenchDatasetWrapper(Dataset):
     def _load_index(self) -> None:
         """Load index for the selected phase."""
         index_path = os.path.join(self.data_root, self.opt.index)
-        print(f"Loading index from {index_path}...")
+        logger.info(f"Loading index from {index_path}...")
         try:
             with open(index_path, 'r', encoding='utf-8') as f:
                 dataset = json.load(f)

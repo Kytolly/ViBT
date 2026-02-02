@@ -4,7 +4,8 @@ import re
 from diffusers import WanPipeline
 from safetensors.torch import load_file
 from huggingface_hub import hf_hub_download
-
+import logging
+logger = logging.getLogger(__name__)
 
 @torch.no_grad()
 def encode_video(pipe: WanPipeline, video_frames):
@@ -138,7 +139,7 @@ class WanModel(nn.Module):
         self.device = device
         self.dtype = dtype
         
-        print(f"Loading WanPipeline from {pretrained_model_path}...")
+        logger.info(f"Loading WanPipeline from {pretrained_model_path}...")
         # 加载完整 Pipeline (VAE, TextEncoder, Transformer)
         self.pipe = WanPipeline.from_pretrained(
             pretrained_model_path, 

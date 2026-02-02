@@ -7,6 +7,8 @@ from tqdm import tqdm
 import wandb
 from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
 import torchvision
+import logging
+logger = logging.getLogger(__name__)
 
 # 导入项目模块
 from vibt.wan import WanModel
@@ -27,7 +29,7 @@ class ViBTTrainer:
         self.device = "cuda"
         
         # [核心修复] 1. 先创建输出目录，防止 _init_wandb 写入 wandb_id.txt 时报错
-        print(f"📂 Creating directories: {self.cfg.project.output_dir}")
+        logger.info(f"📂 Creating directories: {self.cfg.project.output_dir}")
         os.makedirs(self.cfg.project.output_dir, exist_ok=True)
         os.makedirs(self.cfg.project.logging_dir, exist_ok=True)
         
@@ -35,7 +37,7 @@ class ViBTTrainer:
         self._init_wandb()
         
         # 3. 加载模型
-        print(f"🚀 Loading WanModel from {self.cfg.model.path}...")
+        logger.info(f"🚀 Loading WanModel from {self.cfg.model.path}...")
         dtype = torch.bfloat16 if self.cfg.training.mixed_precision == "bf16" else torch.float16
         
         self.model = WanModel.from_pretrained(
@@ -101,7 +103,7 @@ class ViBTTrainer:
 
     def _setup_lora(self):
         """注入 LoRA 模块"""
-        print(f"💉 Injecting LoRA adapters (Rank={self.cfg.model.lora_rank})...")
+        logger.info(f"💉 Injecting LoRA adapters (Rank={self.cfg.model.lora_rank})...")
         lora_config = LoraConfig(
             r=self.cfg.model.lora_rank,
             lora_alpha=self.cfg.model.lora_alpha,
@@ -109,7 +111,7 @@ class ViBTTrainer:
             bias="none"
         )
         self.model.transformer = get_peft_model(self.model.transformer, lora_config)
-        self.model.transformer.print_trainable_parameters()
+        self.model.transformer.logger.info_trainable_parameters()
 
     def _setup_dataloader(self):
         """初始化数据集"""
@@ -123,9 +125,9 @@ class ViBTTrainer:
         opt.width = self.cfg.dataset.width
         opt.clip_len = self.cfg.dataset.clip_len
         
-        print(f"📚 Loading dataset from {opt.assets} ({opt.phase})...")
+        logger.info(f"📚 Loading dataset from {opt.assets} ({opt.phase})...")
         dataset = FollowBenchDatasetWrapper(opt)
-        print(f"✅ Dataset loaded: {len(dataset)} samples.")
+        logger.info(f"✅ Dataset loaded: {len(dataset)} samples.")
         
         self.dataloader = DataLoader(
             dataset,
@@ -137,39 +139,39 @@ class ViBTTrainer:
 
     def _get_fixed_validation_batch(self):
         """获取一个固定的 Batch 用于可视化"""
-        print("🖼️ Fetching a fixed validation batch...")
+        logger.info("🖼️ Fetching a fixed validation batch...")
         try:
             batch = next(iter(self.dataloader))
             return batch
         except Exception as e:
-            print(f"⚠️ Failed to fetch validation batch: {e}")
+            logger.warning(f"⚠️ Failed to fetch validation batch: {e}")
             return None
 
     def _resume_training(self, checkpoint_path):
         """恢复训练逻辑"""
-        print(f"🔄 Resuming training from {checkpoint_path}...")
+        logger.info(f"🔄 Resuming training from {checkpoint_path}...")
         
         # 加载 LoRA
         adapter_path = os.path.join(checkpoint_path, "adapter_model.bin")
         if os.path.exists(adapter_path):
             adapters_weights = torch.load(adapter_path, map_location=self.device)
             set_peft_model_state_dict(self.model.transformer, adapters_weights)
-            print("   ✅ Loaded LoRA weights.")
+            logger.info("   ✅ Loaded LoRA weights.")
         else:
             from safetensors.torch import load_file
             adapter_path_safe = os.path.join(checkpoint_path, "adapter_model.safetensors")
             if os.path.exists(adapter_path_safe):
                 adapters_weights = load_file(adapter_path_safe)
                 set_peft_model_state_dict(self.model.transformer, adapters_weights)
-                print("   ✅ Loaded LoRA weights (safetensors).")
+                logger.info("   ✅ Loaded LoRA weights (safetensors).")
             else:
-                print(f"   ⚠️ LoRA weights not found, starting random init.")
+                logger.warning(f"   ⚠️ LoRA weights not found, starting random init.")
 
         # 加载优化器
         optimizer_path = os.path.join(checkpoint_path, "optimizer.pt")
         if os.path.exists(optimizer_path):
             self.optimizer.load_state_dict(torch.load(optimizer_path, map_location=self.device))
-            print("   ✅ Loaded optimizer state.")
+            logger.info("   ✅ Loaded optimizer state.")
 
         # 加载进度
         state_path = os.path.join(checkpoint_path, "training_state.pt")
@@ -177,7 +179,7 @@ class ViBTTrainer:
             state = torch.load(state_path)
             self.start_epoch = state.get("epoch", 0)
             self.global_step = state.get("global_step", 0)
-            print(f"   ✅ Resumed from Epoch {self.start_epoch}, Step {self.global_step}.")
+            logger.info(f"   ✅ Resumed from Epoch {self.start_epoch}, Step {self.global_step}.")
 
     @torch.no_grad()
     def run_validation_sampling(self, step_tag):
@@ -185,7 +187,7 @@ class ViBTTrainer:
         if self.val_batch is None:
             return
 
-        print(f"🎨 Running validation sampling for {step_tag}...")
+        logger.info(f"🎨 Running validation sampling for {step_tag}...")
         self.model.transformer.eval() 
 
         # 1. 准备数据
@@ -194,7 +196,8 @@ class ViBTTrainer:
         
         # 2. 采样推理 (简化版 Euler)
         # 这里直接复现 inference.py 的逻辑，避免文件读取问题
-        prompt = "Transform ego view to third-person view"
+        prompt = self.cfg.training.instruction
+        logger.info(f"   Using prompt: {prompt}")
         prompt_embeds = self.model.encode_prompt([prompt])
         
         # Encode
@@ -227,7 +230,7 @@ class ViBTTrainer:
         })
         
         self.model.transformer.train() 
-        print("   ✅ Validation sampling done.")
+        logger.info("   ✅ Validation sampling done.")
 
     def save_checkpoint(self, tag, epoch=None):
         """保存检查点"""
@@ -247,13 +250,13 @@ class ViBTTrainer:
             "global_step": self.global_step
         }, os.path.join(path, "training_state.pt"))
         
-        print(f"💾 Checkpoint saved: {path}")
+        logger.info(f"💾 Checkpoint saved: {path}")
         
         # 4. 验证采样
         try:
             self.run_validation_sampling(tag)
         except Exception as e:
-            print(f"⚠️ Validation sampling failed: {e}")
+            logger.warning(f"⚠️ Validation sampling failed: {e}")
 
     def compute_loss(self, ego_pixel, exo_pixel, prompts):
         """Bridge Matching Loss"""
@@ -286,7 +289,7 @@ class ViBTTrainer:
         total_epochs = self.cfg.training.epochs
         accum_steps = self.cfg.training.gradient_accumulation_steps
         
-        print(f"🚀 Start Training from Epoch {self.start_epoch}...")
+        logger.info(f"🚀 Start Training from Epoch {self.start_epoch}...")
         
         for epoch in range(self.start_epoch, total_epochs):
             pbar = tqdm(self.dataloader, desc=f"Epoch {epoch+1}/{total_epochs}")
@@ -296,10 +299,9 @@ class ViBTTrainer:
                 ego_video = batch['ego_video'].to(self.device)
                 exo_video = batch['exo_video'].to(self.device)
                 
-                prompts = ["Transform ego view to third-person view"] * ego_video.shape[0]
-
+                current_prompt = self.cfg.training.instruction
+                prompts = [current_prompt] * ego_video.shape[0]
                 loss = self.compute_loss(ego_video, exo_video, prompts)
-                
                 loss = loss / accum_steps
                 loss.backward()
                 
@@ -323,4 +325,4 @@ class ViBTTrainer:
                     self.save_checkpoint(f"step_{self.global_step}", epoch=epoch)
 
             self.save_checkpoint(f"epoch_{epoch+1}", epoch=epoch+1)
-            print(f"🏁 Epoch {epoch+1} Avg Loss: {epoch_loss / len(self.dataloader):.4f}")
+            logger.info(f"🏁 Epoch {epoch+1} Avg Loss: {epoch_loss / len(self.dataloader):.4f}")
