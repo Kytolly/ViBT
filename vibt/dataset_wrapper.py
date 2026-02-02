@@ -36,7 +36,6 @@ class Options:
     batch_size:     int  = 1                                      
     serial_batches: bool = True                             
     num_workers:    int  = 4
-    device:         str  = "cuda"
 
 class FollowBenchDatasetWrapper(Dataset):
     def __init__(self, opt: Options) -> None:
@@ -95,7 +94,7 @@ class FollowBenchDatasetWrapper(Dataset):
         """
         path = os.path.join(self.data_root, rel_path)
         try:
-            return load_video_to_device(path, device=self.opt.device) 
+            return load_video_to_device(path, device='cpu') 
         except Exception as e:
             logging.error(f"Failed to load video {path}: {e}")
             return torch.zeros(self.opt.clip_len, 3, self.opt.height, self.opt.width)
