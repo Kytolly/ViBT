@@ -66,13 +66,16 @@ class ViBTTrainer:
         # 6. 准备数据
         self._setup_dataloader()
         
-        # 7. 准备固定验证样本
+        # 7. 健全性检查 (Sanity Check)
+        self._perform_sanity_check(num_steps=2)
+        
+        # 8. 准备固定验证样本
         self.val_batch = self._get_fixed_validation_batch()
         
         self.global_step = 0
         self.start_epoch = 0
 
-        # 8. 尝试恢复训练
+        # 9. 尝试恢复训练
         resume_path = getattr(self.cfg.training, "resume_path", "")
         if resume_path:
             self._resume_training(resume_path)
@@ -143,7 +146,60 @@ class ViBTTrainer:
             num_workers=self.cfg.dataset.num_workers,
             pin_memory=True
         )
+        
+    def _perform_sanity_check(self, num_steps=2):
+        """
+        启动前深度体检 检查维度、NaN、Inf 以及空值
+        """
+        logger.info(f"🩺 Performing dataloader sanity check ({num_steps} steps)...")
+        try:
+            check_iter = iter(self.dataloader)
+            for i in range(num_steps):
+                logger.info(f"   [Sanity Check] Fetching batch {i+1}/{num_steps}...")
+                
+                # 1. 尝试读取数据 (如果 Dataset 里面有未处理的 None，这里就会崩)
+                try:
+                    batch = next(check_iter)
+                except TypeError as e:
+                     raise RuntimeError("❌ DataLoader crashed! likely due to 'None' in dataset. Did you fix dataset_wrapper.py?") from e
+                
+                # 2. 检查 Keys
+                if 'ego_video' not in batch or 'exo_video' not in batch:
+                    raise ValueError(f"Batch missing keys. Found: {batch.keys()}")
+                
+                ego = batch['ego_video']
+                exo = batch['exo_video']
+                
+                # 3. 检查维度 (Shape Check)
+                if ego.dim() != 5:
+                    raise ValueError(f"Incorrect tensor shape: {ego.shape}. Expected 5D [B, C, T, H, W].")
+                
+                if ego.shape[1] > 3 and ego.shape[2] == 3:
+                     raise ValueError(f"Dimension mismatch! Found Channels={ego.shape[1]}. Expected Channel First [B, 3, T, H, W]. Check utils.py.")
 
+                # 4. [新增] 检查数值异常 (NaN / Inf)
+                # 这能发现归一化错误或坏数据
+                if torch.isnan(ego).any() or torch.isinf(ego).any():
+                    raise ValueError("❌ NaN or Inf detected in 'ego_video' tensor!")
+                if torch.isnan(exo).any() or torch.isinf(exo).any():
+                    raise ValueError("❌ NaN or Inf detected in 'exo_video' tensor!")
+                    
+                # 5. [新增] 检查是否全是黑帧 (全0 或 全-1)
+                # 我们的 dataset_wrapper 在读不到文件时会返回全0 (归一化后是 -1)
+                # 如果一个 Batch 里全是黑帧，说明这批数据全是坏的
+                # 注意：数据归一化到了 [-1, 1]，所以黑帧可能是 -1
+                if ego.min() == -1 and ego.max() == -1:
+                    logger.warning(f"⚠️ Warning: Batch {i} contains purely black frames (value -1). This might be a corrupted video handled by safety logic.")
+
+            logger.info("   ✅ Sanity check passed! Data shapes and values look healthy.")
+            
+        except StopIteration:
+            logger.warning("   ⚠️ Dataset is too small for sanity check steps.")
+        except Exception as e:
+            logger.error(f"   ❌ Sanity check failed: {e}")
+            logger.error("   ⛔ Stopping training immediately. Please fix your data or loader logic.")
+            sys.exit(1)
+            
     def _get_fixed_validation_batch(self):
         """获取一个固定的 Batch 用于可视化"""
         logger.info("🖼️ Fetching a fixed validation batch...")
@@ -172,7 +228,7 @@ class ViBTTrainer:
                 set_peft_model_state_dict(self.model.transformer, adapters_weights)
                 logger.info("   ✅ Loaded LoRA weights (safetensors).")
             else:
-                logger.warning(f"   ⚠️ weights not found, starting random init.")
+                logger.warning(f"   ⚠️  weights not found, starting random init.")
 
         # 加载优化器
         optimizer_path = os.path.join(checkpoint_path, "optimizer.pt")
@@ -201,7 +257,7 @@ class ViBTTrainer:
         ego_video = self.val_batch['ego_video'][:1].to(self.device) 
         exo_video_gt = self.val_batch['exo_video'][:1].to(self.device)
         
-        # 2. 采样推理 (简化版 Euler)
+        # 2. 采样推理
         # 这里直接复现 inference.py 的逻辑，避免文件读取问题
         prompt = self.cfg.training.instruction
         logger.info(f"   Using prompt: {prompt}")

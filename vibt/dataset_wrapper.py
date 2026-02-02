@@ -21,13 +21,13 @@ class Options:
     root:           str  = CONFIG.dataset.root
     index:          str  = CONFIG.dataset.index
     phase:          str  = CONFIG.dataset.phase
-    clip_len:       int  = CONFIG.dataset.clip_len            
+    clip_len:       int  = CONFIG.dataset.clip_len
+    stride:         int  = CONFIG.dataset.stride            
     height:         int  = CONFIG.dataset.height   
     width:          int  = CONFIG.dataset.width
     batch_size:     int  = CONFIG.dataset.batch_size                                      
     serial_batches: bool = CONFIG.dataset.serial_batches                             
     num_workers:    int  = CONFIG.dataset.num_workers
-    instruction:    str  = getattr(CONFIG.dataset, "instruction", "Transform the video")
 
 class FollowBenchDatasetWrapper(Dataset):
     def __init__(self, opt: Options) -> None:
@@ -43,7 +43,7 @@ class FollowBenchDatasetWrapper(Dataset):
 
     def _load_index(self) -> dict:
         index_path = os.path.join(self.data_root, self.opt.index)
-        print(f"Loading index from {index_path}...")
+        logger.info(f"Loading index from {index_path}...")
         try:
             with open(index_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -57,22 +57,22 @@ class FollowBenchDatasetWrapper(Dataset):
             img = Image.open(path).convert('RGB')
             return self.transform(img)
         except Exception as e:
-            logging.error(f"Failed to load image {path}: {e}")
+            logger.error(f"Failed to load image {path}: {e}")
             return torch.zeros(3, self.opt.height, self.opt.width)
     
     def _load_video(self, rel_path: str) -> Tensor:
         path = os.path.join(self.data_root, rel_path)
         try:
-            # [核心修复 1] 传递 target_size，确保 resize 生效
             return load_video_to_device(
                 path, 
                 device='cpu', 
                 max_frames=self.opt.clip_len,
-                target_size=(self.opt.height, self.opt.width) 
-            ) 
+                sample_stride=self.opt.stride,
+                target_size=(self.opt.height, self.opt.width)  # <--- 之前漏了这行
+            )
+            
         except Exception as e:
-            logging.error(f"Failed to load video {path}: {e}")
-            # [核心修复 2] 失败时返回正确维度的 Tensor [C, T, H, W]
+            logger.error(f"Failed to load video {path}: {e}")
             return torch.zeros(3, self.opt.clip_len, self.opt.height, self.opt.width)
 
     def __len__(self) -> int:

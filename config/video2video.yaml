@@ -11,7 +11,7 @@ model:
 dataset:
   repo_id: "Kytolly/examples_Ego2ExoFollowCamera"
   root: "/opt/liblibai-models/user-workspace2/dataset/ego/FollowBench"
-  index: "index.json"
+  index: "index_clean.json"
   phase: "train"         
   clip_len: 49
   stride: 4            
@@ -19,7 +19,7 @@ dataset:
   width: 832
   batch_size: 1                                      
   serial_batches: True                             
-  num_workers: 4
+  num_workers: 16
 
 training:
   lr: 1e-4

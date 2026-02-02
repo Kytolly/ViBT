@@ -46,13 +46,9 @@ def load_video_to_device(
             while len(frames) < max_frames:
                 frames.extend(frames[:max_frames - len(frames)])
     
-    video_np = np.stack(frames) # Shape: [T, H, W, C]
+    video_np = np.stack(frames) # [T, H, W, C]
     
     tensor = torch.from_numpy(video_np).to(device, non_blocking=True)
-    
-    # [核心修复] 调整维度顺序
-    # 原来: permute(0, 3, 1, 2) -> [T, C, H, W] (错误)
-    # 现在: permute(3, 0, 1, 2) -> [C, T, H, W] (正确，PyTorch Video 标准格式)
     tensor = tensor.permute(3, 0, 1, 2).float()
     
     # Normalize to [-1, 1]
