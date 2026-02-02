@@ -1,5 +1,30 @@
-name: video2video
+project:
+  name: "ViBT-Ego2Exo"
+  output_dir: "outputs/"
+  logging_dir: "logs/"
+
+model:
+  path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B"
+  use_lora: True
+  lora_rank: 16
+  lora_alpha: 32
+
 dataset:
-  root: /opt/liblibai-models/user-workspace2/dataset/ego/FollowBench
-  
-  
+  repo_id: "Kytolly/examples_Ego2ExoFollowCamera"
+  root: "/opt/liblibai-models/user-workspace2/dataset/ego/FollowBench"
+  index: "index.json"
+  phase: "train"         
+  clip_len: 600            
+  height: 704   
+  width: 1280
+  batch_size: 1                                      
+  serial_batches: True                             
+  num_workers: 4
+
+training:
+  lr: 1e-4
+  epochs: 20
+  gradient_accumulation_steps: 4
+  save_interval: 1000  # steps
+  log_interval: 10     # steps
+  mixed_precision: "bf16"

@@ -12,6 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from .utils import load_video_to_device
+from .env import CONFIG
 
 @dataclass
 class Options:
@@ -19,28 +20,27 @@ class Options:
     Runtime configuration options.
     """
     # 基础信息
-    repo_id:        str  = "Kytolly/examples_Ego2ExoFollowCamera" # HuggingFace 仓库 ID
+    repo_id:        str  = CONFIG.dataset.repo_id # HuggingFace 仓库 ID
     
     # 路径配置
-    assets:         str  = "dataset/"                              # 数据集本地根目录
-    index:          str  = "index.json"
+    root:           str  = CONFIG.dataset.root                              # 数据集本地根目录
+    index:          str  = CONFIG.dataset.index
     
     # 运行模式
-    phase:          str  = "train"                                 # train | test_seen | test_unseen
+    phase:          str  = CONFIG.dataset.phase                                 # train | test_seen | test_unseen
 
-    clip_len:       int  = 600            
-    height:         int  = 704   
-    width:          int  = 1280
+    clip_len:       int  = CONFIG.dataset.clip_len            
+    height:         int  = CONFIG.dataset.height   
+    width:          int  = CONFIG.dataset.width
     
     # Dataloader 配置
-    batch_size:     int  = 1                                      
-    serial_batches: bool = True                             
-    num_workers:    int  = 4
+    batch_size:     int  = CONFIG.dataset.batch_size                                      
+    serial_batches: bool = CONFIG.dataset.serial_batches                             
+    num_workers:    int  = CONFIG.dataset.num_workers
 
 class FollowBenchDatasetWrapper(Dataset):
     def __init__(self, opt: Options) -> None:
         """Initialize dataset.
-
         Args:
             opt: Options object with runtime configuration.
         """
@@ -51,10 +51,10 @@ class FollowBenchDatasetWrapper(Dataset):
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
-        self.data_root = os.path.join(self.opt.assets, self.opt.phase)
+        self.data_root = os.path.join(self.opt.root, self.opt.phase)
         
         # 2. 加载索引
-        self._load_index()
+        self.dataset = self._load_index()
         self.ids = list(self.dataset.keys())
 
     def _load_index(self) -> None:
@@ -62,10 +62,12 @@ class FollowBenchDatasetWrapper(Dataset):
         index_path = os.path.join(self.data_root, self.opt.index)
         try:
             with open(index_path, 'r', encoding='utf-8') as f:
-                self.dataset = json.load(f)
+                dataset = json.load(f)
+                return dataset
         except FileNotFoundError:
             logger.warning(f"Index file not found at {index_path}")
-    
+            return {}
+        
     def _load_image(self, rel_path: str) -> Tensor:
         """Load an image and apply transforms.
 
