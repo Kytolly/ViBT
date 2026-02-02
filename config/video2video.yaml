@@ -30,3 +30,4 @@ training:
   mixed_precision: "bf16"
   gradient_checkpointing: True
   instruction: "Transform the view from ego-centric to third-person perspective"
+  resume_path: "outputs/video2video/checkpoint_step_100"

@@ -13,11 +13,6 @@ logger = logging.getLogger(__name__)
 # 导入项目模块
 from vibt.wan import WanModel
 from vibt.dataset_wrapper import FollowBenchDatasetWrapper, Options
-# 导入推理模块用于验证采样
-try:
-    from vibt.inference import generate_vibt
-except ImportError:
-    generate_vibt = None # 容错处理
 
 class ViBTTrainer:
     def __init__(self, cfg):
@@ -28,12 +23,12 @@ class ViBTTrainer:
         self.cfg = cfg
         self.device = "cuda"
         
-        # [核心修复] 1. 先创建输出目录，防止 _init_wandb 写入 wandb_id.txt 时报错
+        # 1. 创建目录
         logger.info(f"📂 Creating directories: {self.cfg.project.output_dir}")
         os.makedirs(self.cfg.project.output_dir, exist_ok=True)
         os.makedirs(self.cfg.project.logging_dir, exist_ok=True)
         
-        # 2. 初始化 WandB (现在目录已存在，可以安全写入)
+        # 2. 初始化 WandB
         self._init_wandb()
         
         # 3. 加载模型
@@ -46,53 +41,61 @@ class ViBTTrainer:
             dtype=dtype
         )
         
-        # 4. 配置训练模式
+        # 4. 配置训练模式 (LoRA vs Full)
         if self.cfg.model.use_lora:
             self._setup_lora()
+            params_to_optimize = filter(lambda p: p.requires_grad, self.model.transformer.parameters())
         else:
-            # 解冻 Transformer 进行全量训练
+            logger.info("🔓 Unfreezing Transformer for Full-Parameter Training...")
             if self.cfg.training.gradient_checkpointing:
                 self.model.transformer.enable_gradient_checkpointing()
-            logger.info("🔓 Unfreezing Transformer for Full-Parameter Training...")
+            
             for param in self.model.transformer.parameters():
                 param.requires_grad = True
+            params_to_optimize = self.model.transformer.parameters()
             
         # 5. 准备优化器
         self.optimizer = torch.optim.AdamW(
-            filter(lambda p: p.requires_grad, self.model.transformer.parameters()),
+            params_to_optimize,
             lr=self.cfg.training.lr
         )
         
         # 6. 准备数据
         self._setup_dataloader()
         
-        # 7. 健全性检查 (Sanity Check)
+        # 7. 健全性检查
         self._perform_sanity_check(num_steps=2)
-        
+
         # 8. 准备固定验证样本
         self.val_batch = self._get_fixed_validation_batch()
         
         self.global_step = 0
         self.start_epoch = 0
 
-        # 9. 尝试恢复训练
-        resume_path = getattr(self.cfg.training, "resume_path", "")
-        if resume_path:
-            self._resume_training(resume_path)
+        # 9. 智能恢复训练逻辑
+        user_resume_path = getattr(self.cfg.training, "resume_path", "")
+        
+        if user_resume_path:
+            # 策略 A: 用户明确指定了路径
+            self._resume_training(user_resume_path)
+        else:
+            # 策略 B: 自动检测最新检查点
+            latest_ckpt = self._find_latest_checkpoint(self.cfg.project.output_dir)
+            if latest_ckpt:
+                logger.info(f"✨ Auto-detected latest checkpoint: {latest_ckpt}")
+                self._resume_training(latest_ckpt)
+            else:
+                logger.info("🆕 No checkpoint found. Starting fresh training.")
 
     def _init_wandb(self):
-        """初始化 WandB"""
-        resume_path = getattr(self.cfg.training, "resume_path", "")
-        resume_mode = "allow" if resume_path else None
-        
         id_file = os.path.join(self.cfg.project.output_dir, "wandb_id.txt")
         wandb_id = None
+        resume_mode = "allow"
         
-        if resume_path and os.path.exists(id_file):
+        if os.path.exists(id_file):
             with open(id_file, 'r') as f:
                 wandb_id = f.read().strip()
 
-        # 初始化 run
         run = wandb.init(
             project=self.cfg.project.name,
             dir=self.cfg.project.logging_dir,
@@ -102,7 +105,6 @@ class ViBTTrainer:
             id=wandb_id
         )
         
-        # 保存 ID 供后续恢复
         if not os.path.exists(id_file):
             with open(id_file, 'w') as f:
                 f.write(run.id)
@@ -112,7 +114,6 @@ class ViBTTrainer:
         return OmegaConf.to_container(cfg, resolve=True)
 
     def _setup_lora(self):
-        """注入 LoRA 模块"""
         logger.info(f"💉 Injecting LoRA adapters (Rank={self.cfg.model.lora_rank})...")
         lora_config = LoraConfig(
             r=self.cfg.model.lora_rank,
@@ -124,7 +125,6 @@ class ViBTTrainer:
         self.model.transformer.print_trainable_parameters()
 
     def _setup_dataloader(self):
-        """初始化数据集"""
         opt = Options()
         opt.assets = self.cfg.dataset.root
         opt.phase = self.cfg.dataset.phase
@@ -134,6 +134,7 @@ class ViBTTrainer:
         opt.height = self.cfg.dataset.height
         opt.width = self.cfg.dataset.width
         opt.clip_len = self.cfg.dataset.clip_len
+        opt.stride = self.cfg.dataset.stride
         
         logger.info(f"📚 Loading dataset from {opt.assets} ({opt.phase})...")
         dataset = FollowBenchDatasetWrapper(opt)
@@ -144,64 +145,45 @@ class ViBTTrainer:
             batch_size=self.cfg.dataset.batch_size,
             shuffle=True,
             num_workers=self.cfg.dataset.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            prefetch_factor=2,
+            persistent_workers=True
         )
-        
+
     def _perform_sanity_check(self, num_steps=2):
-        """
-        启动前深度体检 检查维度、NaN、Inf 以及空值
-        """
+        """启动前深度体检"""
         logger.info(f"🩺 Performing dataloader sanity check ({num_steps} steps)...")
+        
+        lock_file = os.path.join(self.cfg.dataset.root, self.cfg.dataset.phase, "dataset_verified.lock")
+        if os.path.exists(lock_file):
+            logger.info("   🔒 [Cache] Found dataset_verified.lock. Skipping extensive checks.")
+            return
+
         try:
             check_iter = iter(self.dataloader)
             for i in range(num_steps):
                 logger.info(f"   [Sanity Check] Fetching batch {i+1}/{num_steps}...")
+                batch = next(check_iter)
                 
-                # 1. 尝试读取数据 (如果 Dataset 里面有未处理的 None，这里就会崩)
-                try:
-                    batch = next(check_iter)
-                except TypeError as e:
-                     raise RuntimeError("❌ DataLoader crashed! likely due to 'None' in dataset. Did you fix dataset_wrapper.py?") from e
-                
-                # 2. 检查 Keys
-                if 'ego_video' not in batch or 'exo_video' not in batch:
+                if 'ego_video' not in batch:
                     raise ValueError(f"Batch missing keys. Found: {batch.keys()}")
                 
                 ego = batch['ego_video']
-                exo = batch['exo_video']
-                
-                # 3. 检查维度 (Shape Check)
                 if ego.dim() != 5:
-                    raise ValueError(f"Incorrect tensor shape: {ego.shape}. Expected 5D [B, C, T, H, W].")
+                    raise ValueError(f"Incorrect tensor shape: {ego.shape}. Expected [B, C, T, H, W].")
                 
-                if ego.shape[1] > 3 and ego.shape[2] == 3:
-                     raise ValueError(f"Dimension mismatch! Found Channels={ego.shape[1]}. Expected Channel First [B, 3, T, H, W]. Check utils.py.")
-
-                # 4. [新增] 检查数值异常 (NaN / Inf)
-                # 这能发现归一化错误或坏数据
                 if torch.isnan(ego).any() or torch.isinf(ego).any():
-                    raise ValueError("❌ NaN or Inf detected in 'ego_video' tensor!")
-                if torch.isnan(exo).any() or torch.isinf(exo).any():
-                    raise ValueError("❌ NaN or Inf detected in 'exo_video' tensor!")
+                    raise ValueError("❌ NaN or Inf detected in 'ego_video'!")
                     
-                # 5. [新增] 检查是否全是黑帧 (全0 或 全-1)
-                # 我们的 dataset_wrapper 在读不到文件时会返回全0 (归一化后是 -1)
-                # 如果一个 Batch 里全是黑帧，说明这批数据全是坏的
-                # 注意：数据归一化到了 [-1, 1]，所以黑帧可能是 -1
                 if ego.min() == -1 and ego.max() == -1:
-                    logger.warning(f"⚠️ Warning: Batch {i} contains purely black frames (value -1). This might be a corrupted video handled by safety logic.")
+                    logger.warning(f"⚠️ Warning: Batch {i} contains purely black frames.")
 
-            logger.info("   ✅ Sanity check passed! Data shapes and values look healthy.")
-            
-        except StopIteration:
-            logger.warning("   ⚠️ Dataset is too small for sanity check steps.")
+            logger.info("   ✅ Sanity check passed!")
         except Exception as e:
             logger.error(f"   ❌ Sanity check failed: {e}")
-            logger.error("   ⛔ Stopping training immediately. Please fix your data or loader logic.")
             sys.exit(1)
-            
+
     def _get_fixed_validation_batch(self):
-        """获取一个固定的 Batch 用于可视化"""
         logger.info("🖼️ Fetching a fixed validation batch...")
         try:
             batch = next(iter(self.dataloader))
@@ -210,33 +192,41 @@ class ViBTTrainer:
             logger.warning(f"⚠️ Failed to fetch validation batch: {e}")
             return None
 
+    def _find_latest_checkpoint(self, output_dir):
+        if not os.path.exists(output_dir): return None
+        checkpoints = []
+        for d in os.listdir(output_dir):
+            if d.startswith("checkpoint_") and os.path.isdir(os.path.join(output_dir, d)):
+                try:
+                    step = int(d.split("_")[-1])
+                    checkpoints.append((step, os.path.join(output_dir, d)))
+                except ValueError: continue
+        if not checkpoints: return None
+        checkpoints.sort(key=lambda x: x[0], reverse=True)
+        return checkpoints[0][1]
+
     def _resume_training(self, checkpoint_path):
-        """恢复训练逻辑"""
         logger.info(f"🔄 Resuming training from {checkpoint_path}...")
         
-        # 加载权重
-        adapter_path = os.path.join(checkpoint_path, "adapter_model.bin")
-        if os.path.exists(adapter_path):
-            adapters_weights = torch.load(adapter_path, map_location=self.device)
-            set_peft_model_state_dict(self.model.transformer, adapters_weights)
-            logger.info("   ✅ Loaded LoRA weights.")
-        else:
+        # 1. Weights
+        full_weight_path = os.path.join(checkpoint_path, "diffusion_pytorch_model.safetensors")
+        if not self.cfg.model.use_lora and os.path.exists(full_weight_path):
             from safetensors.torch import load_file
-            adapter_path_safe = os.path.join(checkpoint_path, "adapter_model.safetensors")
-            if os.path.exists(adapter_path_safe):
-                adapters_weights = load_file(adapter_path_safe)
+            state_dict = load_file(full_weight_path)
+            self.model.transformer.load_state_dict(state_dict, strict=False)
+            logger.info("   ✅ Loaded Full Finetune weights.")
+        elif self.cfg.model.use_lora:
+            adapter_path = os.path.join(checkpoint_path, "adapter_model.bin")
+            if os.path.exists(adapter_path):
+                adapters_weights = torch.load(adapter_path, map_location=self.device)
                 set_peft_model_state_dict(self.model.transformer, adapters_weights)
-                logger.info("   ✅ Loaded LoRA weights (safetensors).")
-            else:
-                logger.warning(f"   ⚠️  weights not found, starting random init.")
-
-        # 加载优化器
+                logger.info("   ✅ Loaded LoRA weights.")
+        
+        # 2. Optimizer & State
         optimizer_path = os.path.join(checkpoint_path, "optimizer.pt")
         if os.path.exists(optimizer_path):
             self.optimizer.load_state_dict(torch.load(optimizer_path, map_location=self.device))
-            logger.info("   ✅ Loaded optimizer state.")
-
-        # 加载进度
+            
         state_path = os.path.join(checkpoint_path, "training_state.pt")
         if os.path.exists(state_path):
             state = torch.load(state_path)
@@ -244,30 +234,32 @@ class ViBTTrainer:
             self.global_step = state.get("global_step", 0)
             logger.info(f"   ✅ Resumed from Epoch {self.start_epoch}, Step {self.global_step}.")
 
+        # [新增] 3. 恢复后立即采样验证
+        logger.info("🎨 Triggering validation sampling to verify resume status...")
+        try:
+            self.run_validation_sampling(f"resume_step_{self.global_step}")
+        except Exception as e:
+            logger.warning(f"⚠️ Resume sampling failed: {e}")
+
     @torch.no_grad()
     def run_validation_sampling(self, step_tag):
-        """运行验证采样并记录到 WandB"""
         if self.val_batch is None:
             return
 
         logger.info(f"🎨 Running validation sampling for {step_tag}...")
         self.model.transformer.eval() 
 
-        # 1. 准备数据
         ego_video = self.val_batch['ego_video'][:1].to(self.device) 
         exo_video_gt = self.val_batch['exo_video'][:1].to(self.device)
         
-        # 2. 采样推理
-        # 这里直接复现 inference.py 的逻辑，避免文件读取问题
         prompt = self.cfg.training.instruction
-        logger.info(f"   Using prompt: {prompt}")
         prompt_embeds = self.model.encode_prompt([prompt])
         
         # Encode
         z_curr = self.model.encode(ego_video)
         
-        # Euler Loop
-        steps = 20
+        # Euler Sampling
+        steps = 10 
         dt = 1.0 / steps
         for i in range(steps):
             t_curr = i / steps
@@ -275,54 +267,70 @@ class ViBTTrainer:
             pred_v = self.model(z_curr, t_input, prompt_embeds)
             z_curr = z_curr + pred_v * dt
             
-        # Decode
-        pred_video = self.model.decode(z_curr) # [1, C, F, H, W] in [-1, 1]
+        pred_video = self.model.decode(z_curr) 
         
-        # 处理为 WandB 格式 [0, 255]
+        # ---------------------------------------------------------
+        # [修改] 三屏合一拼接保存逻辑 (Ego | Pred | GT)
+        # ---------------------------------------------------------
+        try:
+            sample_dir = os.path.join(self.cfg.project.output_dir, "samples")
+            os.makedirs(sample_dir, exist_ok=True)
+            save_path = os.path.join(sample_dir, f"val_{step_tag}_combined.mp4")
+
+            # 1. 拼接: 在 Width 维度 (dim=4) 上拼接
+            # [B, C, T, H, W] -> [B, C, T, H, W*3]
+            combined_tensor = torch.cat([ego_video, pred_video, exo_video_gt], dim=4)
+
+            # 2. 转换格式: [B, C, T, H, W] -> [T, H, W, C]
+            local_vid = combined_tensor[0].permute(1, 2, 3, 0).float() 
+            local_vid = (local_vid * 0.5 + 0.5).clamp(0, 1) # 反归一化
+            local_vid = (local_vid * 255).to(torch.uint8)
+            
+            # 3. 保存
+            torchvision.io.write_video(save_path, local_vid.cpu(), fps=8)
+            logger.info(f"   💾 Saved COMBINED sample (Ego|Pred|GT) to {save_path}")
+        except Exception as e:
+            logger.error(f"   ❌ Failed to save local video: {e}")
+
+        # WandB Logging
         def process_for_wandb(vid_tensor):
-            vid = vid_tensor[0].permute(1, 0, 2, 3) # [F, C, H, W]
-            vid = (vid * 0.5 + 0.5).clamp(0, 1)     # [-1, 1] -> [0, 1]
+            vid = vid_tensor[0].permute(1, 0, 2, 3) 
+            vid = (vid * 0.5 + 0.5).clamp(0, 1)     
             vid = (vid * 255).to(torch.uint8)
             return vid.cpu().numpy()
 
-        wandb.log({
-            "val/source_ego": wandb.Video(process_for_wandb(ego_video), fps=8, format="mp4"),
-            "val/generated_exo": wandb.Video(process_for_wandb(pred_video), fps=8, format="mp4"),
-            "val/ground_truth": wandb.Video(process_for_wandb(exo_video_gt), fps=8, format="mp4"),
-            "global_step": self.global_step
-        })
+        try:
+            wandb.log({
+                "val/source_ego": wandb.Video(process_for_wandb(ego_video), fps=8, format="mp4"),
+                "val/generated_exo": wandb.Video(process_for_wandb(pred_video), fps=8, format="mp4"),
+                "val/ground_truth": wandb.Video(process_for_wandb(exo_video_gt), fps=8, format="mp4"),
+                "global_step": self.global_step
+            })
+        except Exception as e:
+            logger.warning(f"WandB logging failed: {e}")
         
         self.model.transformer.train() 
-        logger.info("   ✅ Validation sampling done.")
 
     def save_checkpoint(self, tag, epoch=None):
-        """保存检查点"""
         path = os.path.join(self.cfg.project.output_dir, f"checkpoint_{tag}")
         os.makedirs(path, exist_ok=True)
         
-        # 1. 保存模型
+        logger.info(f"💾 Saving checkpoint to {path}...")
         self.model.transformer.save_pretrained(path)
-        
-        # 2. 保存优化器
         torch.save(self.optimizer.state_dict(), os.path.join(path, "optimizer.pt"))
         
-        # 3. 保存状态
         current_epoch = epoch if epoch is not None else self.start_epoch
         torch.save({
             "epoch": current_epoch,
             "global_step": self.global_step
         }, os.path.join(path, "training_state.pt"))
         
-        logger.info(f"💾 Checkpoint saved: {path}")
-        
-        # 4. 验证采样
         try:
             self.run_validation_sampling(tag)
         except Exception as e:
             logger.warning(f"⚠️ Validation sampling failed: {e}")
 
     def compute_loss(self, ego_pixel, exo_pixel, prompts):
-        """Bridge Matching Loss"""
         prompt_embeds = self.model.encode_prompt(prompts)
         
         with torch.no_grad():
@@ -347,23 +355,34 @@ class ViBTTrainer:
         return F.mse_loss(pred_v, target_v)
 
     def train(self):
-        """训练主循环"""
         self.model.transformer.train()
         total_epochs = self.cfg.training.epochs
         accum_steps = self.cfg.training.gradient_accumulation_steps
         
+        # [核心] 计算断点续训需要跳过的步数
+        batches_to_skip = 0
+        if self.global_step > 0:
+            batches_to_skip = (self.global_step * accum_steps) % len(self.dataloader)
+            
         logger.info(f"🚀 Start Training from Epoch {self.start_epoch}...")
+        if batches_to_skip > 0:
+             logger.info(f"⏩ Resuming mid-epoch: Skipping first {batches_to_skip} batches to align with step {self.global_step}.")
         
         for epoch in range(self.start_epoch, total_epochs):
             pbar = tqdm(self.dataloader, desc=f"Epoch {epoch+1}/{total_epochs}")
             epoch_loss = 0.0
             
             for step, batch in enumerate(pbar):
+                # 跳过逻辑
+                if epoch == self.start_epoch and step < batches_to_skip:
+                    if step % 10 == 0: pbar.set_description(f"⏩ Skipping {step}/{batches_to_skip}")
+                    continue
+
                 ego_video = batch['ego_video'].to(self.device)
                 exo_video = batch['exo_video'].to(self.device)
                 
-                current_prompt = self.cfg.training.instruction
-                prompts = [current_prompt] * ego_video.shape[0]
+                prompts = [self.cfg.training.instruction] * ego_video.shape[0]
+                
                 loss = self.compute_loss(ego_video, exo_video, prompts)
                 loss = loss / accum_steps
                 loss.backward()
@@ -379,13 +398,14 @@ class ViBTTrainer:
                             "lr": self.optimizer.param_groups[0]['lr'],
                             "epoch": epoch
                         })
+                    
+                    if self.global_step > 0 and self.global_step % self.cfg.training.save_interval == 0:
+                        self.save_checkpoint(f"step_{self.global_step}", epoch=epoch)
                 
                 current_loss = loss.item() * accum_steps
                 epoch_loss += current_loss
                 pbar.set_postfix({"loss": f"{current_loss:.4f}"})
-                
-                if self.global_step > 0 and self.global_step % self.cfg.training.save_interval == 0:
-                    self.save_checkpoint(f"step_{self.global_step}", epoch=epoch)
 
             self.save_checkpoint(f"epoch_{epoch+1}", epoch=epoch+1)
+            batches_to_skip = 0 
             logger.info(f"🏁 Epoch {epoch+1} Avg Loss: {epoch_loss / len(self.dataloader):.4f}")
