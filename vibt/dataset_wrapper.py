@@ -11,7 +11,7 @@ from typing import Dict, Any
 import logging
 logger = logging.getLogger(__name__)
 
-from utils import load_video_to_device
+from .utils import load_video_to_device
 
 @dataclass
 class Options:
@@ -23,7 +23,7 @@ class Options:
     
     # 路径配置
     assets:         str  = "dataset/"                              # 数据集本地根目录
-    annotation:     str  = "index.json"
+    index:          str  = "index.json"
     
     # 运行模式
     phase:          str  = "train"                                 # train | test_seen | test_unseen
@@ -36,6 +36,7 @@ class Options:
     batch_size:     int  = 1                                      
     serial_batches: bool = True                             
     num_workers:    int  = 4
+    device:         str  = "cuda"
 
 class FollowBenchDatasetWrapper(Dataset):
     def __init__(self, opt: Options) -> None:
@@ -55,7 +56,6 @@ class FollowBenchDatasetWrapper(Dataset):
         
         # 2. 加载索引
         self._load_index()
-        self.dataset = self.caption if self.opt.phase == 'train' else self.annotation
         self.ids = list(self.dataset.keys())
 
     def _load_index(self) -> None:
@@ -63,7 +63,7 @@ class FollowBenchDatasetWrapper(Dataset):
         index_path = os.path.join(self.data_root, self.opt.index)
         try:
             with open(index_path, 'r', encoding='utf-8') as f:
-                self.caption = json.load(f)
+                self.dataset = json.load(f)
         except FileNotFoundError:
             logger.warning(f"Index file not found at {index_path}")
     
@@ -95,7 +95,7 @@ class FollowBenchDatasetWrapper(Dataset):
         """
         path = os.path.join(self.data_root, rel_path)
         try:
-            return load_video_to_device(path, device='cpu') 
+            return load_video_to_device(path, device=self.opt.device) 
         except Exception as e:
             logging.error(f"Failed to load video {path}: {e}")
             return torch.zeros(self.opt.clip_len, 3, self.opt.height, self.opt.width)
