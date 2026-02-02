@@ -1,3 +1,6 @@
 *.egg-info
 .vscode
 **/__pycache__/
+
+dataset
+ViBT_safetensors/

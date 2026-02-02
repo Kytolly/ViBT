@@ -1,0 +1,5 @@
+name: video2video
+dataset:
+  root: /opt/liblibai-models/user-workspace2/dataset/ego/FollowBench
+  
+  
