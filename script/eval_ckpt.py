@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     # === 配置区 ===
-    checkpoint_path = os.path.join(CONFIG.project.output_dir, "checkpoint_step_100") # <--- 指定检查点
+    checkpoint_path = os.path.join(CONFIG.project.output_dir, "checkpoint_step_1700") # <--- 指定检查点
     device = "cuda"
     dtype = torch.bfloat16
     
@@ -103,7 +103,7 @@ def main():
     local_vid = (local_vid * 0.5 + 0.5).clamp(0, 1)
     local_vid = (local_vid * 255).to(torch.uint8)
     
-    save_path = "eval_result_step100.mp4"
+    save_path = "eval_result_step1700.mp4"
     torchvision.io.write_video(save_path, local_vid.cpu(), fps=8)
     print(f"✅ Saved result to {save_path}")
 

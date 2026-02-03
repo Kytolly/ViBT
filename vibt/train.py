@@ -375,9 +375,11 @@ class ViBTTrainer:
             for step, batch in enumerate(pbar):
                 # 跳过逻辑
                 if epoch == self.start_epoch and step < batches_to_skip:
-                    if step % 10 == 0: pbar.set_description(f"⏩ Skipping {step}/{batches_to_skip}")
+                    pbar.set_description(f"⏩ Skipping {step}/{batches_to_skip}")
                     continue
-
+                elif pbar.desc.startswith("⏩"):
+                    pbar.set_description(f"Epoch {epoch+1}/{total_epochs}")
+                    
                 ego_video = batch['ego_video'].to(self.device)
                 exo_video = batch['exo_video'].to(self.device)
                 

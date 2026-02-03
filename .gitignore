@@ -7,3 +7,5 @@ ViBT_safetensors/
 .env
 logs/
 outputs/
+image/
+video/
