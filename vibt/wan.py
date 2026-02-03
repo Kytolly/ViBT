@@ -24,7 +24,7 @@ class WanModel(nn.Module):
         self.tokenizer = self.pipe.tokenizer
         self.transformer = self.pipe.transformer
         
-        # 默认冻结组件 (Transformer会在train.py中根据需要解冻)
+        # 默认冻结组件
         self.vae.requires_grad_(False)
         self.text_encoder.requires_grad_(False)
         self.transformer.requires_grad_(False)
@@ -41,10 +41,6 @@ class WanModel(nn.Module):
         # VAE Encode
         dist = self.vae.encode(pixel_values).latent_dist
         latents = dist.sample()
-
-        # [核心修复] 将 list 转换为 tensor，并调整 shape 用于广播
-        # latents: [B, C, F, H, W]
-        # mean/std: [C] -> [1, C, 1, 1, 1]
         latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
         latents_std = torch.tensor(self.vae.config.latents_std).view(1, -1, 1, 1, 1).to(latents.device, latents.dtype)
         

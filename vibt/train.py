@@ -7,18 +7,21 @@ from tqdm import tqdm
 import wandb
 from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
 import torchvision
+from omegaconf import OmegaConf, DictConfig
 import logging
 logger = logging.getLogger(__name__)
 
 # 导入项目模块
-from vibt.wan import WanModel
-from vibt.dataset_wrapper import FollowBenchDatasetWrapper, Options
+from .wan import WanModel
+from .dataset_wrapper import FollowBenchDatasetWrapper, Options
+from .scheduler import ViBTScheduler
+from .env import ViBTEnvConfig
 
 class ViBTTrainer:
-    def __init__(self, cfg):
+    def __init__(self, cfg: ViBTEnvConfig):
         """
         Args:
-            cfg (DictConfig): 由 vibt.env.CONFIG 提供的全局配置对象
+            cfg (ViBTEnvConfig): 由 vibt.env.ViBTEnvConfig 提供的全局配置对象
         """
         self.cfg = cfg
         self.device = "cuda"
@@ -26,6 +29,7 @@ class ViBTTrainer:
         # 1. 创建目录
         logger.info(f"📂 Creating directories: {self.cfg.project.output_dir}")
         os.makedirs(self.cfg.project.output_dir, exist_ok=True)
+        logger.info(f"📂 Creating directories: {self.cfg.project.logging_dir}")
         os.makedirs(self.cfg.project.logging_dir, exist_ok=True)
         
         # 2. 初始化 WandB
@@ -79,13 +83,7 @@ class ViBTTrainer:
             # 策略 A: 用户明确指定了路径
             self._resume_training(user_resume_path)
         else:
-            # 策略 B: 自动检测最新检查点
-            latest_ckpt = self._find_latest_checkpoint(self.cfg.project.output_dir)
-            if latest_ckpt:
-                logger.info(f"✨ Auto-detected latest checkpoint: {latest_ckpt}")
-                self._resume_training(latest_ckpt)
-            else:
-                logger.info("🆕 No checkpoint found. Starting fresh training.")
+            logger.info("🆕 No checkpoint found. Starting fresh training.")
 
     def _init_wandb(self):
         id_file = os.path.join(self.cfg.project.output_dir, "wandb_id.txt")
@@ -255,40 +253,46 @@ class ViBTTrainer:
         prompt = self.cfg.training.instruction
         prompt_embeds = self.model.encode_prompt([prompt])
         
-        # Encode
-        z_curr = self.model.encode(ego_video)
+        # 1. Encode
+        latents = self.model.encode(ego_video)
         
-        # Euler Sampling
-        steps = 10 
-        dt = 1.0 / steps
-        for i in range(steps):
-            t_curr = i / steps
-            t_input = torch.tensor([t_curr * 1000], device=self.device, dtype=z_curr.dtype)
-            pred_v = self.model(z_curr, t_input, prompt_embeds)
-            z_curr = z_curr + pred_v * dt
+        # 2. Setup Scheduler (关键一致性)
+        # 使用与 inference.py 相同的参数
+        scheduler = ViBTScheduler(num_train_timesteps=1000)
+        scheduler.set_timesteps(num_inference_steps=10, device=self.device) # 验证时步数少一点以加快速度
+        scheduler.set_parameters(noise_scale=1.0, shift_gamma=5.0)
+
+        # 3. Sampling Loop
+        for i, t in enumerate(scheduler.timesteps):
+            t_input = torch.tensor([t], device=self.device, dtype=latents.dtype)
             
-        pred_video = self.model.decode(z_curr) 
+            noise_pred = self.model(
+                hidden_states=latents, 
+                timestep=t_input, 
+                encoder_hidden_states=prompt_embeds
+            )
+            
+            latents = scheduler.step(noise_pred, t, latents)[0]
+            
+        # 4. Decode
+        pred_video = self.model.decode(latents) 
         
+        # ... (后续的拼接保存和 WandB 逻辑保持不变) ...
         # ---------------------------------------------------------
-        # [修改] 三屏合一拼接保存逻辑 (Ego | Pred | GT)
+        # [保留] 三屏合一拼接保存逻辑
         # ---------------------------------------------------------
         try:
             sample_dir = os.path.join(self.cfg.project.output_dir, "samples")
             os.makedirs(sample_dir, exist_ok=True)
             save_path = os.path.join(sample_dir, f"val_{step_tag}_combined.mp4")
 
-            # 1. 拼接: 在 Width 维度 (dim=4) 上拼接
-            # [B, C, T, H, W] -> [B, C, T, H, W*3]
             combined_tensor = torch.cat([ego_video, pred_video, exo_video_gt], dim=4)
-
-            # 2. 转换格式: [B, C, T, H, W] -> [T, H, W, C]
             local_vid = combined_tensor[0].permute(1, 2, 3, 0).float() 
-            local_vid = (local_vid * 0.5 + 0.5).clamp(0, 1) # 反归一化
+            local_vid = (local_vid * 0.5 + 0.5).clamp(0, 1)
             local_vid = (local_vid * 255).to(torch.uint8)
             
-            # 3. 保存
             torchvision.io.write_video(save_path, local_vid.cpu(), fps=8)
-            logger.info(f"   💾 Saved COMBINED sample (Ego|Pred|GT) to {save_path}")
+            logger.info(f"   💾 Saved COMBINED sample to {save_path}")
         except Exception as e:
             logger.error(f"   ❌ Failed to save local video: {e}")
 
@@ -338,12 +342,38 @@ class ViBTTrainer:
             z_1 = self.model.encode(exo_pixel) 
             
         B = z_0.shape[0]
+        # 1. 采样时间 t ~ U(0, 1) [论文 Alg 1, Line 2]
         t = torch.rand((B,), device=self.device, dtype=z_0.dtype)
+        
+        # 2. 采样布朗噪声 epsilon ~ N(0, I) [论文 Alg 1, Line 2]
+        epsilon = torch.randn_like(z_0)
+        
+        # 维度广播
         t_expand = t.view(B, 1, 1, 1, 1)
         
-        z_t = (1 - t_expand) * z_0 + t_expand * z_1
-        target_v = z_1 - z_0
+        # 3. 构造中间状态 x_t (Brownian Bridge) [论文 Eq. 7]
+        # 公式: x_t = (1-t)x_0 + t*x_1 + sqrt(t(1-t)) * epsilon
+        bridge_noise_coeff = torch.sqrt(t_expand * (1 - t_expand))
+        z_t = (1 - t_expand) * z_0 + t_expand * z_1 + bridge_noise_coeff * epsilon
         
+        # 4. 计算目标速度 u_t [论文 Eq. 8]
+        # 公式: u_t = (x_1 - x_0) - sqrt(t/(1-t)) * epsilon
+        # 为了数值稳定，给分母加极小值 clamp
+        time_safe = torch.clamp(t_expand, min=1e-5, max=1.0 - 1e-5)
+        u_t_noise_coeff = torch.sqrt(time_safe / (1 - time_safe))
+        target_v = (z_1 - z_0) - u_t_noise_coeff * epsilon
+        
+        # 5. 计算归一化因子 alpha (Stabilization) [论文 Eq. 27]
+        # 公式: alpha^2 = 1 + (t * D) / ((1-t) * ||x_1 - x_0||^2)
+        D = z_0[0].numel() # Latent 总维度
+        # 计算 ||x_1 - x_0||^2，保持 batch 维度
+        diff_norm_sq = torch.sum((z_1 - z_0) ** 2, dim=[1, 2, 3, 4]).view(B, 1, 1, 1, 1)
+        
+        alpha_sq = 1 + (time_safe * D) / ((1 - time_safe) * diff_norm_sq + 1e-6)
+        alpha = torch.sqrt(alpha_sq)
+        
+        # 6. 模型预测
+        # Wan2.1 要求输入时间步为 0-1000
         t_input = t * 1000 
         
         pred_v = self.model(
@@ -352,7 +382,11 @@ class ViBTTrainer:
             encoder_hidden_states=prompt_embeds
         )
         
-        return F.mse_loss(pred_v, target_v)
+        # 7. 计算加权 Loss [论文 Eq. 15]
+        # Loss = || (pred_v - u_t) / alpha ||^2
+        loss = F.mse_loss(pred_v / alpha, target_v / alpha)
+        
+        return loss
 
     def train(self):
         self.model.transformer.train()

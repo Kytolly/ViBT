@@ -2,17 +2,18 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
-from torch import Tensor
-
+import numpy as np
 import os
 import json
+import random
+import logging
 from dataclasses import dataclass
 from typing import Dict, Any
-import logging
-logger = logging.getLogger(__name__)
+from decord import VideoReader, cpu
 
-from .utils import load_video_to_device
 from .env import CONFIG
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Options:
@@ -21,8 +22,8 @@ class Options:
     root:           str  = CONFIG.dataset.root
     index:          str  = CONFIG.dataset.index
     phase:          str  = CONFIG.dataset.phase
-    clip_len:       int  = CONFIG.dataset.clip_len
-    stride:         int  = CONFIG.dataset.stride            
+    clip_len:       int  = CONFIG.dataset.clip_len  # 生成的帧数 (e.g., 49)
+    stride:         int  = CONFIG.dataset.stride    # 采样间隔 (e.g., 4)
     height:         int  = CONFIG.dataset.height   
     width:          int  = CONFIG.dataset.width
     batch_size:     int  = CONFIG.dataset.batch_size                                      
@@ -32,14 +33,16 @@ class Options:
 class FollowBenchDatasetWrapper(Dataset):
     def __init__(self, opt: Options) -> None:
         self.opt = opt
-        self.transform = transforms.Compose([
+        self.data_root = os.path.join(self.opt.root, self.opt.phase)
+        self.dataset = self._load_index()
+        self.ids = list(self.dataset.keys())
+        
+        # 图像/视频的后处理变换 (读取后执行)
+        self.pixel_transform = transforms.Compose([
             transforms.Resize((opt.height, opt.width)),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
-        self.data_root = os.path.join(self.opt.root, self.opt.phase)
-        self.dataset = self._load_index()
-        self.ids = list(self.dataset.keys())
 
     def _load_index(self) -> dict:
         index_path = os.path.join(self.data_root, self.opt.index)
@@ -50,41 +53,139 @@ class FollowBenchDatasetWrapper(Dataset):
         except FileNotFoundError:
             logger.warning(f"Index file not found at {index_path}")
             return {}
-        
-    def _load_image(self, rel_path: str) -> Tensor:
+
+    def _get_video_reader(self, rel_path):
+        """安全获取 VideoReader"""
         path = os.path.join(self.data_root, rel_path)
         try:
-            img = Image.open(path).convert('RGB')
-            return self.transform(img)
+            # num_threads=1 避免多线程死锁，ctx=cpu(0) 使用 CPU 解码
+            vr = VideoReader(path, ctx=cpu(0), num_threads=1)
+            return vr, path
         except Exception as e:
-            logger.error(f"Failed to load image {path}: {e}")
-            return torch.zeros(3, self.opt.height, self.opt.width)
-    
-    def _load_video(self, rel_path: str) -> Tensor:
-        path = os.path.join(self.data_root, rel_path)
-        try:
-            return load_video_to_device(
-                path, 
-                device='cpu', 
-                max_frames=self.opt.clip_len,
-                sample_stride=self.opt.stride,
-                target_size=(self.opt.height, self.opt.width)  # <--- 之前漏了这行
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to load video {path}: {e}")
-            return torch.zeros(3, self.opt.clip_len, self.opt.height, self.opt.width)
+            # logger.warning(f"Failed to load video {path}: {e}")
+            return None, path
 
     def __len__(self) -> int:
         return len(self.ids)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
-        vid_id = self.ids[index]
-        data = self.dataset[vid_id]
+        """
+        参考 WorldWander 实现：
+        1. 容错重试循环
+        2. 共享随机索引 (Shared Indexing)
+        3. Decord 批量读取
+        """
+        # 确保索引在范围内
+        index = index % len(self.ids)
         
+        retries = 0
+        while True:
+            # 防止死循环
+            if retries > 10:
+                raise RuntimeError("Too many bad videos in dataset! Check your data.")
+            
+            vid_id = self.ids[index]
+            data = self.dataset[vid_id]
+            
+            # 1. 加载两个视频的 Reader (此时不读取数据，只读元数据)
+            ego_reader, ego_path = self._get_video_reader(data['the first view'])
+            exo_reader, exo_path = self._get_video_reader(data['the third view'])
+            
+            # 2. 验证视频有效性
+            if ego_reader is None or exo_reader is None:
+                # 视频损坏，随机换一个索引重试
+                index = random.randint(0, len(self.ids) - 1)
+                retries += 1
+                continue
+                
+            ego_len = len(ego_reader)
+            exo_len = len(exo_reader)
+            
+            # 3. 验证长度一致性 (WorldWander 的核心逻辑)
+            # 要求两个视频长度差异不能太大，且必须长于需要的采样长度
+            min_len = min(ego_len, exo_len)
+            needed_len = (self.opt.clip_len - 1) * self.opt.stride + 1
+            
+            # 如果视频太短，或者两者长度严重不一致(比如差了100帧以上，说明物理没对齐)
+            # 这里宽松一点：只要都能切出需要的长度即可
+            if min_len < needed_len:
+                # logger.warning(f"Video too short: {vid_id} (len={min_len}, need={needed_len})")
+                index = random.randint(0, len(self.ids) - 1)
+                retries += 1
+                continue
+            
+            # 4. 计算共享切片索引 (Core Synchronization Logic)
+            try:
+                # 随机选择起始点
+                max_start_idx = min_len - needed_len
+                if self.opt.phase == 'train':
+                    start_idx = random.randint(0, max_start_idx)
+                else:
+                    start_idx = 0 # 测试时固定从头开始，或者取中间
+                
+                # 生成帧索引序列: [start, start+stride, start+2*stride, ...]
+                batch_indices = start_idx + np.arange(self.opt.clip_len) * self.opt.stride
+                
+                # 5. 使用 Decord 批量读取 (Get Batch)
+                # get_batch 返回的是 (T, H, W, C) 的 tensor/array
+                ego_frames = ego_reader.get_batch(batch_indices).asnumpy()
+                exo_frames = exo_reader.get_batch(batch_indices).asnumpy()
+                
+                # 6. 转换为 PyTorch Tensor 并处理
+                # WorldWander 是在这里做 Resize 和 Normalize
+                ego_tensor = self._process_frames(ego_frames) # [C, T, H, W]
+                exo_tensor = self._process_frames(exo_frames) # [C, T, H, W]
+                
+                # 成功获取！
+                break
+                
+            except Exception as e:
+                logger.warning(f"Error processing video {vid_id}: {e}")
+                index = random.randint(0, len(self.ids) - 1)
+                retries += 1
+                continue
+
+        # 7. 加载参考图 (如果有)
+        ref_path = data.get('reference', None)
+        if ref_path:
+            ref_tensor = self._load_image(ref_path)
+        else:
+            ref_tensor = torch.zeros(3, self.opt.height, self.opt.width)
+
         return {
             'video_id': vid_id,
-            'ego_video': self._load_video(data['the first view']),
-            'exo_video': self._load_video(data['the third view']),
-            'ref_image': self._load_image(data['reference']),
+            'ego_video': ego_tensor,
+            'exo_video': exo_tensor,
+            'ref_image': ref_tensor,
         }
+
+    def _process_frames(self, frames_np):
+        """
+        Args:
+            frames_np: numpy array (T, H, W, C), usually RGB uint8
+        Returns:
+            tensor: (C, T, H, W), normalized [-1, 1]
+        """
+        # 转为 list of PIL Image 以利用 torchvision transforms
+        # 也可以直接用 tensor 操作，但保持和 _load_image 一致
+        tensors = []
+        for i in range(frames_np.shape[0]):
+            img = Image.fromarray(frames_np[i])
+            tensors.append(self.pixel_transform(img))
+        
+        # Stack -> (T, C, H, W)
+        video_tensor = torch.stack(tensors)
+        
+        # Permute -> (C, T, H, W)
+        video_tensor = video_tensor.permute(1, 0, 2, 3)
+        
+        return video_tensor
+
+    def _load_image(self, rel_path: str):
+        path = os.path.join(self.data_root, rel_path)
+        try:
+            img = Image.open(path).convert('RGB')
+            return self.pixel_transform(img)
+        except Exception as e:
+            logger.error(f"Failed to load image {path}: {e}")
+            return torch.zeros(3, self.opt.height, self.opt.width)
