@@ -16,6 +16,7 @@ from .wan import WanModel
 from .dataset_wrapper import FollowBenchDatasetWrapper, Options
 from .scheduler import ViBTScheduler
 from .env import ViBTEnvConfig
+from .inference import generate_vibt
 
 class ViBTTrainer:
     def __init__(self, cfg: ViBTEnvConfig):
@@ -245,75 +246,74 @@ class ViBTTrainer:
             return
 
         logger.info(f"🎨 Running validation sampling for {step_tag}...")
+        
+        # 1. 切换到评估模式 (Pipeline 内部也会处理，但显式调用更安全)
         self.model.transformer.eval() 
-
-        ego_video = self.val_batch['ego_video'][:1].to(self.device) 
+        
+        # 2. 准备数据
+        # 取 Batch 中的第一个样本进行验证
+        ego_video = self.val_batch['ego_video'][:1] # [1, C, F, H, W]
         exo_video_gt = self.val_batch['exo_video'][:1].to(self.device)
         
         prompt = self.cfg.training.instruction
-        prompt_embeds = self.model.encode_prompt([prompt])
         
-        # 1. Encode
-        latents = self.model.encode(ego_video)
-        
-        # 2. Setup Scheduler (关键一致性)
-        # 使用与 inference.py 相同的参数
-        scheduler = ViBTScheduler(num_train_timesteps=1000)
-        scheduler.set_timesteps(num_inference_steps=10, device=self.device) # 验证时步数少一点以加快速度
-        scheduler.set_parameters(noise_scale=1.0, shift_gamma=5.0)
-
-        # 3. Sampling Loop
-        for i, t in enumerate(scheduler.timesteps):
-            t_input = torch.tensor([t], device=self.device, dtype=latents.dtype)
-            
-            noise_pred = self.model(
-                hidden_states=latents, 
-                timestep=t_input, 
-                encoder_hidden_states=prompt_embeds
+        try:
+            # 3. [核心修改] 直接调用 generate_vibt
+            # 这会自动使用 Pipeline, ViBTScheduler, CFG=1.5, Shift=5.0
+            # 从而保证验证视频的质量与推理脚本一致
+            pred_video = generate_vibt(
+                model=self.model,
+                source_input=ego_video,  # 直接传入 Tensor
+                prompt=prompt,
+                steps=20,                # 验证时步数可以少一点以加快速度 (如 20)
+                device=self.device,
+                shift_gamma=5.0,         # 保持与论文一致
+                noise_scale=1.0,         # SDE 模式
+                guidance_scale=1.5       # 启用 CFG，这对于验证质量至关重要
             )
             
-            latents = scheduler.step(noise_pred, t, latents)[0]
+            # generate_vibt 返回的是 [1, C, F, H, W]，且已经在 [-1, 1] 范围内
+            pred_video = pred_video.to(self.device)
             
-        # 4. Decode
-        pred_video = self.model.decode(latents) 
-        
-        # ... (后续的拼接保存和 WandB 逻辑保持不变) ...
-        # ---------------------------------------------------------
-        # [保留] 三屏合一拼接保存逻辑
-        # ---------------------------------------------------------
-        try:
+            # 4. 拼接与保存 (三屏合一: Input | Pred | GT)
             sample_dir = os.path.join(self.cfg.project.output_dir, "samples")
             os.makedirs(sample_dir, exist_ok=True)
             save_path = os.path.join(sample_dir, f"val_{step_tag}_combined.mp4")
 
-            combined_tensor = torch.cat([ego_video, pred_video, exo_video_gt], dim=4)
+            # 确保维度一致进行拼接
+            combined_tensor = torch.cat([ego_video.to(self.device), pred_video, exo_video_gt], dim=4)
+            
+            # 格式转换 [C, F, H, W] -> [F, H, W, C]
             local_vid = combined_tensor[0].permute(1, 2, 3, 0).float() 
-            local_vid = (local_vid * 0.5 + 0.5).clamp(0, 1)
+            local_vid = (local_vid * 0.5 + 0.5).clamp(0, 1) # Un-normalize
             local_vid = (local_vid * 255).to(torch.uint8)
             
             torchvision.io.write_video(save_path, local_vid.cpu(), fps=8)
             logger.info(f"   💾 Saved COMBINED sample to {save_path}")
-        except Exception as e:
-            logger.error(f"   ❌ Failed to save local video: {e}")
 
-        # WandB Logging
-        def process_for_wandb(vid_tensor):
-            vid = vid_tensor[0].permute(1, 0, 2, 3) 
-            vid = (vid * 0.5 + 0.5).clamp(0, 1)     
-            vid = (vid * 255).to(torch.uint8)
-            return vid.cpu().numpy()
+            # 5. WandB Logging
+            def process_for_wandb(vid_tensor):
+                # WandB 需要 [T, C, H, W] 且值在 0-255 或 0-1
+                # 输入: [1, C, F, H, W]
+                vid = vid_tensor[0].permute(1, 0, 2, 3) 
+                vid = (vid * 0.5 + 0.5).clamp(0, 1)     
+                vid = (vid * 255).to(torch.uint8)
+                return vid.cpu().numpy()
 
-        try:
             wandb.log({
-                "val/source_ego": wandb.Video(process_for_wandb(ego_video), fps=8, format="mp4"),
+                "val/source_ego": wandb.Video(process_for_wandb(ego_video.to(self.device)), fps=8, format="mp4"),
                 "val/generated_exo": wandb.Video(process_for_wandb(pred_video), fps=8, format="mp4"),
                 "val/ground_truth": wandb.Video(process_for_wandb(exo_video_gt), fps=8, format="mp4"),
                 "global_step": self.global_step
             })
+            
         except Exception as e:
-            logger.warning(f"WandB logging failed: {e}")
-        
-        self.model.transformer.train() 
+            logger.error(f"   ❌ Validation sampling failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # 6. 恢复训练模式
+        self.model.transformer.train()
 
     def save_checkpoint(self, tag, epoch=None):
         path = os.path.join(self.cfg.project.output_dir, f"checkpoint_{tag}")
