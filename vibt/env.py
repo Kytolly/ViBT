@@ -51,7 +51,7 @@ class DatasetConfig:
     num_workers: int = 4
 
 @dataclass
-class TrainingConfig:
+class TrainConfig:
     lr: float = 1e-4
     epochs: int = 20
     gradient_accumulation_steps: int = 4
@@ -63,12 +63,19 @@ class TrainingConfig:
     instruction: str = "Transform the view from ego-centric to third-person perspective"
 
 @dataclass
+class InferenceConfig:
+    num_inference_steps: int = 28
+    noise_scale: float = 1.0
+    shift_gamma: float = 5.0
+
+@dataclass
 class ViBTEnvConfig:
     """环境配置基类"""
     project: ProjectConfig = field(default_factory=ProjectConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
-    training: TrainingConfig = field(default_factory=TrainingConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
+    inference: InferenceConfig = field(default_factory=InferenceConfig)
 
 # -----------------------------------------------------------------------------
 # 2. 配置加载逻辑
@@ -157,4 +164,5 @@ def load_config(config_file_name: str = "config/video2video.yaml"):
 
     return final_cfg
 
-CONFIG: ViBTEnvConfig = load_config()
+CONFIG: ViBTEnvConfig = load_config("config/video2video.yaml")
+CONFIG_STYLIZATION: ViBTEnvConfig = load_config("config/stylization.yaml")

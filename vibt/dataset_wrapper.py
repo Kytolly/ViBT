@@ -189,3 +189,92 @@ class FollowBenchDatasetWrapper(Dataset):
         except Exception as e:
             logger.error(f"Failed to load image {path}: {e}")
             return torch.zeros(3, self.opt.height, self.opt.width)
+        
+class Style1000DatasetWrapper(Dataset):
+    """
+    专为 Style1000 设计的通用数据集加载器。
+    """
+    def __init__(self, opt):
+        self.opt = opt
+        # data_root 指向 style1000 文件夹
+        self.data_root = opt.root 
+        self.dataset = self._load_index(opt.index)
+        
+        # 预处理管线：与 Wan2.1 VAE 对齐
+        self.pixel_transform = transforms.Compose([
+            transforms.Resize((opt.height, opt.width)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        ])
+
+    def _load_index(self, index_path):
+        # 支持绝对路径或相对于 root 的路径
+        if not os.path.isabs(index_path):
+            index_path = os.path.join(self.data_root, index_path)
+            
+        logger.info(f"📂 Loading style1000 index from: {index_path}")
+        with open(index_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            # 确保是列表格式
+            return data if isinstance(data, list) else []
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def _get_video_tensor(self, rel_path, start_idx):
+        path = os.path.join(self.data_root, rel_path)
+        vr = VideoReader(path, ctx=cpu(0))
+        
+        # 计算采样帧索引序列
+        batch_indices = start_idx + np.arange(self.opt.clip_len) * self.opt.stride
+        frames_np = vr.get_batch(batch_indices).asnumpy()
+        
+        # 处理每一帧
+        tensors = []
+        for i in range(frames_np.shape[0]):
+            img = Image.fromarray(frames_np[i])
+            tensors.append(self.pixel_transform(img))
+            
+        # 堆叠并转换为 [C, T, H, W]
+        return torch.stack(tensors).permute(1, 0, 2, 3)
+
+    def __getitem__(self, index):
+        retries = 0
+        while retries < 10:
+            try:
+                item = self.dataset[index]
+                
+                # 映射字段：destyle (x0) -> style (x1)
+                ego_path = item['destyle']
+                exo_path = item['style']
+                prompt = item.get('caption', "")
+
+                # 获取视频读取器以确定长度
+                vr_ego = VideoReader(os.path.join(self.data_root, ego_path))
+                vr_exo = VideoReader(os.path.join(self.data_root, exo_path))
+                
+                min_len = min(len(vr_ego), len(vr_exo))
+                needed = (self.opt.clip_len - 1) * self.opt.stride + 1
+                
+                if min_len < needed:
+                    raise ValueError("Video too short")
+
+                # [核心逻辑] 共享随机起点，确保物理时间对齐
+                max_start = min_len - needed
+                start_idx = random.randint(0, max_start) if self.opt.phase == 'train' else 0
+                
+                ego_video = self._get_video_tensor(ego_path, start_idx)
+                exo_video = self._get_video_tensor(exo_path, start_idx)
+
+                return {
+                    "ego_video": ego_video,   # x0
+                    "exo_video": exo_video,   # x1
+                    "prompt": prompt,
+                    "video_id": ego_path
+                }
+            except Exception as e:
+                index = random.randint(0, len(self.dataset) - 1)
+                retries += 1
+                continue
+        
+        raise RuntimeError("Failed to load data after multiple retries.")

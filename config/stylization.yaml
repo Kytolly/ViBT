@@ -1,30 +1,30 @@
 project:
-  name: "ViBT-Ego2Exo"
+  name: "ViBT-Style1000"
   root: "/opt/liblibai-models/user-workspace2/users/xqy/project/ViBT"
-  output_dir: "outputs/video2video_v2"
+  output_dir: "outputs/stylization"
   logging_dir: "logs"
 
 model:
   path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B-Diffusers"
-  use_lora: False
+  use_lora: true
 
 dataset:
-  repo_id: "Kytolly/examples_Ego2ExoFollowCamera"
-  root: "/opt/liblibai-models/user-workspace2/dataset/ego/FollowBench"
-  index: "index_clean.json"
-  phase: "train"         
+  repo_id: ""
+  root: "/opt/liblibai-models/user-workspace2/datasets/style1000"
+  index: "index_for_train.json"
+  phase: ""         
   clip_len: 49
   stride: 4            
   height: 480  
   width: 832
-  batch_size: 1                                      
+  batch_size: 2                                      
   serial_batches: True                             
   num_workers: 16
 
 train:
   lr: 1e-4
   epochs: 20
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 8
   save_interval: 100  # steps
   log_interval: 10     # steps
   mixed_precision: "bf16"
