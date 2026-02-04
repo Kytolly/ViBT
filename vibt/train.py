@@ -374,8 +374,8 @@ class ViBTTrainer:
 
     def train(self):
         self.model.transformer.train()
-        total_epochs = self.cfg.training.epochs
-        accum_steps = self.cfg.training.gradient_accumulation_steps
+        total_epochs = self.cfg.train.epochs
+        accum_steps = self.cfg.train.gradient_accumulation_steps
         
         # [核心] 计算断点续训需要跳过的步数
         batches_to_skip = 0
@@ -398,13 +398,13 @@ class ViBTTrainer:
                 elif pbar.desc.startswith("⏩"):
                     pbar.set_description(f"Epoch {epoch+1}/{total_epochs}")
                     
-                ego_video = batch['ego_video'].to(self.device)
-                exo_video = batch['exo_video'].to(self.device)
+                source_video = batch['source_video'].to(self.device)
+                target_video = batch['target_video'].to(self.device)
                 prompt = batch['prompt']
                 
-                prompts = [prompt] * ego_video.shape[0]
+                prompts = [prompt] * source_video.shape[0]
                 
-                loss = self.compute_loss(ego_video, exo_video, prompts)
+                loss = self.compute_loss(source_video, target_video, prompts)
                 loss = loss / accum_steps
                 loss.backward()
                 
@@ -413,14 +413,14 @@ class ViBTTrainer:
                     self.optimizer.zero_grad()
                     self.global_step += 1
                     
-                    if self.global_step % self.cfg.training.log_interval == 0:
+                    if self.global_step % self.cfg.train.log_interval == 0:
                         wandb.log({
                             "train_loss": loss.item() * accum_steps, 
                             "lr": self.optimizer.param_groups[0]['lr'],
                             "epoch": epoch
                         })
                     
-                    if self.global_step > 0 and self.global_step % self.cfg.training.save_interval == 0:
+                    if self.global_step > 0 and self.global_step % self.cfg.train.save_interval == 0:
                         self.save_checkpoint(f"step_{self.global_step}", epoch=epoch)
                 
                 current_loss = loss.item() * accum_steps

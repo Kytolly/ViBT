@@ -35,6 +35,7 @@ class FollowBenchDatasetWrapper(Dataset):
         self.opt = opt
         self.data_root = os.path.join(self.opt.root, self.opt.phase)
         self.dataset = self._load_index()
+        self.ids = list(self.dataset.keys())
         
         # 图像/视频的后处理变换 (读取后执行)
         self.pixel_transform = transforms.Compose([
@@ -194,7 +195,7 @@ class Style1000DatasetWrapper(Dataset):
     """
     专为 Style1000 设计的通用数据集加载器。
     """
-    def __init__(self, opt):
+    def __init__(self, opt: Options):
         self.opt = opt
         # data_root 指向 style1000 文件夹
         self.data_root = opt.root 

@@ -7,17 +7,19 @@ project:
 model:
   path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B-Diffusers"
   use_lora: true
+  lora_rank: 64
+  lora_alpha: 16
 
 dataset:
   repo_id: ""
   root: "/opt/liblibai-models/user-workspace2/datasets/style1000_aligned"
   index: "index_for_train.json"
   phase: ""         
-  clip_len: 49
+  clip_len: 29
   stride: 4            
   height: 480  
   width: 832
-  batch_size: 2                                      
+  batch_size: 1                                      
   serial_batches: True                             
   num_workers: 16
 
@@ -25,7 +27,7 @@ train:
   lr: 1e-4
   epochs: 20
   gradient_accumulation_steps: 8
-  save_interval: 100  # steps
+  save_interval: 25  # steps
   log_interval: 10     # steps
   mixed_precision: "bf16"
   gradient_checkpointing: True
