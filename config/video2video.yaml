@@ -30,4 +30,9 @@ training:
   mixed_precision: "bf16"
   gradient_checkpointing: True
   instruction: "Transform the view from ego-centric to third-person perspective"
-  resume_path: 
+  resume_path: ""
+
+inferencing:
+  num_inference_steps: 28
+  noise_scale: 1.0
+  shift_gamma: 5.0

@@ -342,38 +342,28 @@ class ViBTTrainer:
             z_1 = self.model.encode(exo_pixel) 
             
         B = z_0.shape[0]
-        # 1. 采样时间 t ~ U(0, 1) [论文 Alg 1, Line 2]
+        # t ~ U(0, 1)
         t = torch.rand((B,), device=self.device, dtype=z_0.dtype)
         
-        # 2. 采样布朗噪声 epsilon ~ N(0, I) [论文 Alg 1, Line 2]
+        # epsilon ~ N(0, I)
         epsilon = torch.randn_like(z_0)
-        
-        # 维度广播
         t_expand = t.view(B, 1, 1, 1, 1)
         
-        # 3. 构造中间状态 x_t (Brownian Bridge) [论文 Eq. 7]
-        # 公式: x_t = (1-t)x_0 + t*x_1 + sqrt(t(1-t)) * epsilon
+        # x_t = (1-t)x_0 + t*x_1 + sqrt(t(1-t)) * epsilon
         bridge_noise_coeff = torch.sqrt(t_expand * (1 - t_expand))
         z_t = (1 - t_expand) * z_0 + t_expand * z_1 + bridge_noise_coeff * epsilon
         
-        # 4. 计算目标速度 u_t [论文 Eq. 8]
-        # 公式: u_t = (x_1 - x_0) - sqrt(t/(1-t)) * epsilon
-        # 为了数值稳定，给分母加极小值 clamp
+        # u_t = (x_1 - x_0) - sqrt(t/(1-t)) * epsilon
         time_safe = torch.clamp(t_expand, min=1e-5, max=1.0 - 1e-5)
         u_t_noise_coeff = torch.sqrt(time_safe / (1 - time_safe))
         target_v = (z_1 - z_0) - u_t_noise_coeff * epsilon
         
-        # 5. 计算归一化因子 alpha (Stabilization) [论文 Eq. 27]
-        # 公式: alpha^2 = 1 + (t * D) / ((1-t) * ||x_1 - x_0||^2)
-        D = z_0[0].numel() # Latent 总维度
-        # 计算 ||x_1 - x_0||^2，保持 batch 维度
+        # alpha^2 = 1 + (t * D) / ((1-t) * ||x_1 - x_0||^2)
+        D = z_0[0].numel()
         diff_norm_sq = torch.sum((z_1 - z_0) ** 2, dim=[1, 2, 3, 4]).view(B, 1, 1, 1, 1)
         
         alpha_sq = 1 + (time_safe * D) / ((1 - time_safe) * diff_norm_sq + 1e-6)
         alpha = torch.sqrt(alpha_sq)
-        
-        # 6. 模型预测
-        # Wan2.1 要求输入时间步为 0-1000
         t_input = t * 1000 
         
         pred_v = self.model(
@@ -381,8 +371,7 @@ class ViBTTrainer:
             timestep=t_input,
             encoder_hidden_states=prompt_embeds
         )
-        
-        # 7. 计算加权 Loss [论文 Eq. 15]
+
         # Loss = || (pred_v - u_t) / alpha ||^2
         loss = F.mse_loss(pred_v / alpha, target_v / alpha)
         

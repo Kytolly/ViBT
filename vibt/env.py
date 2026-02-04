@@ -157,4 +157,4 @@ def load_config(config_file_name: str = "config/video2video.yaml"):
 
     return final_cfg
 
-CONFIG: DictConfig = load_config()
+CONFIG: ViBTEnvConfig = load_config()
