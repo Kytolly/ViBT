@@ -10,7 +10,7 @@ model:
 
 dataset:
   repo_id: ""
-  root: "/opt/liblibai-models/user-workspace2/datasets/style1000"
+  root: "/opt/liblibai-models/user-workspace2/datasets/style1000_aligned"
   index: "index_for_train.json"
   phase: ""         
   clip_len: 49
@@ -29,7 +29,7 @@ train:
   log_interval: 10     # steps
   mixed_precision: "bf16"
   gradient_checkpointing: True
-  instruction: "Transform the view from ego-centric to third-person perspective"
+  instruction: ""
   resume_path: ""
 
 inference:

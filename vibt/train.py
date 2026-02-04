@@ -13,19 +13,21 @@ logger = logging.getLogger(__name__)
 
 # 导入项目模块
 from .wan import WanModel
-from .dataset_wrapper import FollowBenchDatasetWrapper, Options
+from torch.utils.data import Dataset
+from .dataset_wrapper import FollowBenchDatasetWrapper, Options, Style1000DatasetWrapper
 from .scheduler import ViBTScheduler
 from .env import ViBTEnvConfig
 from .inference import generate_vibt
 
 class ViBTTrainer:
-    def __init__(self, cfg: ViBTEnvConfig):
+    def __init__(self, cfg: ViBTEnvConfig, dataset: Dataset):
         """
         Args:
             cfg (ViBTEnvConfig): 由 vibt.env.ViBTEnvConfig 提供的全局配置对象
         """
         self.cfg = cfg
         self.device = "cuda"
+        self.dataset = dataset
         
         # 1. 创建目录
         logger.info(f"📂 Creating directories: {self.cfg.project.output_dir}")
@@ -38,7 +40,7 @@ class ViBTTrainer:
         
         # 3. 加载模型
         logger.info(f"🚀 Loading WanModel from {self.cfg.model.path}...")
-        dtype = torch.bfloat16 if self.cfg.training.mixed_precision == "bf16" else torch.float16
+        dtype = torch.bfloat16 if self.cfg.train.mixed_precision == "bf16" else torch.float16
         
         self.model = WanModel.from_pretrained(
             self.cfg.model.path, 
@@ -52,7 +54,7 @@ class ViBTTrainer:
             params_to_optimize = filter(lambda p: p.requires_grad, self.model.transformer.parameters())
         else:
             logger.info("🔓 Unfreezing Transformer for Full-Parameter Training...")
-            if self.cfg.training.gradient_checkpointing:
+            if self.cfg.train.gradient_checkpointing:
                 self.model.transformer.enable_gradient_checkpointing()
             
             for param in self.model.transformer.parameters():
@@ -62,7 +64,7 @@ class ViBTTrainer:
         # 5. 准备优化器
         self.optimizer = torch.optim.AdamW(
             params_to_optimize,
-            lr=self.cfg.training.lr
+            lr=self.cfg.train.lr
         )
         
         # 6. 准备数据
@@ -78,10 +80,8 @@ class ViBTTrainer:
         self.start_epoch = 0
 
         # 9. 智能恢复训练逻辑
-        user_resume_path = getattr(self.cfg.training, "resume_path", "")
-        
+        user_resume_path = self.cfg.train.resume_path
         if user_resume_path:
-            # 策略 A: 用户明确指定了路径
             self._resume_training(user_resume_path)
         else:
             logger.info("🆕 No checkpoint found. Starting fresh training.")
@@ -99,7 +99,7 @@ class ViBTTrainer:
             project=self.cfg.project.name,
             dir=self.cfg.project.logging_dir,
             config=self._flatten_config(self.cfg),
-            name=f"vibt-lora-ep{self.cfg.training.epochs}",
+            name=f"vibt-{self.cfg.project.name}-ep{self.cfg.train.epochs}",
             resume=resume_mode,
             id=wandb_id
         )
@@ -125,9 +125,8 @@ class ViBTTrainer:
 
     def _setup_dataloader(self):
         opt = Options()
-        opt.assets = self.cfg.dataset.root
+        opt.root = self.cfg.dataset.root
         opt.phase = self.cfg.dataset.phase
-        opt.annotation = self.cfg.dataset.index
         opt.index = self.cfg.dataset.index
         
         opt.height = self.cfg.dataset.height
@@ -135,8 +134,8 @@ class ViBTTrainer:
         opt.clip_len = self.cfg.dataset.clip_len
         opt.stride = self.cfg.dataset.stride
         
-        logger.info(f"📚 Loading dataset from {opt.assets} ({opt.phase})...")
-        dataset = FollowBenchDatasetWrapper(opt)
+        logger.info(f"📚 Loading dataset from {opt.root} ({opt.phase})...")
+        dataset = self.dataset
         logger.info(f"✅ Dataset loaded: {len(dataset)} samples.")
         
         self.dataloader = DataLoader(
@@ -164,17 +163,17 @@ class ViBTTrainer:
                 logger.info(f"   [Sanity Check] Fetching batch {i+1}/{num_steps}...")
                 batch = next(check_iter)
                 
-                if 'ego_video' not in batch:
+                if 'source_video' not in batch:
                     raise ValueError(f"Batch missing keys. Found: {batch.keys()}")
                 
-                ego = batch['ego_video']
-                if ego.dim() != 5:
-                    raise ValueError(f"Incorrect tensor shape: {ego.shape}. Expected [B, C, T, H, W].")
+                source = batch['source_video']
+                if source.dim() != 5:
+                    raise ValueError(f"Incorrect tensor shape: {source.shape}. Expected [B, C, T, H, W].")
                 
-                if torch.isnan(ego).any() or torch.isinf(ego).any():
-                    raise ValueError("❌ NaN or Inf detected in 'ego_video'!")
+                if torch.isnan(source).any() or torch.isinf(source).any():
+                    raise ValueError("❌ NaN or Inf detected in 'source_video'!")
                     
-                if ego.min() == -1 and ego.max() == -1:
+                if source.min() == -1 and source.max() == -1:
                     logger.warning(f"⚠️ Warning: Batch {i} contains purely black frames.")
 
             logger.info("   ✅ Sanity check passed!")
@@ -252,18 +251,14 @@ class ViBTTrainer:
         
         # 2. 准备数据
         # 取 Batch 中的第一个样本进行验证
-        ego_video = self.val_batch['ego_video'][:1] # [1, C, F, H, W]
-        exo_video_gt = self.val_batch['exo_video'][:1].to(self.device)
-        
-        prompt = self.cfg.training.instruction
+        source_video = self.val_batch['source_video'][:1] # [1, C, F, H, W]
+        target_video_gt = self.val_batch['target_video'][:1].to(self.device)
+        prompt = self.val_batch['prompt'][0] 
         
         try:
-            # 3. [核心修改] 直接调用 generate_vibt
-            # 这会自动使用 Pipeline, ViBTScheduler, CFG=1.5, Shift=5.0
-            # 从而保证验证视频的质量与推理脚本一致
             pred_video = generate_vibt(
                 model=self.model,
-                source_input=ego_video,  # 直接传入 Tensor
+                source_input=source_video,  # 直接传入 Tensor
                 prompt=prompt,
                 steps=20,                # 验证时步数可以少一点以加快速度 (如 20)
                 device=self.device,
@@ -281,7 +276,7 @@ class ViBTTrainer:
             save_path = os.path.join(sample_dir, f"val_{step_tag}_combined.mp4")
 
             # 确保维度一致进行拼接
-            combined_tensor = torch.cat([ego_video.to(self.device), pred_video, exo_video_gt], dim=4)
+            combined_tensor = torch.cat([source_video.to(self.device), pred_video, target_video_gt], dim=4)
             
             # 格式转换 [C, F, H, W] -> [F, H, W, C]
             local_vid = combined_tensor[0].permute(1, 2, 3, 0).float() 
@@ -301,9 +296,9 @@ class ViBTTrainer:
                 return vid.cpu().numpy()
 
             wandb.log({
-                "val/source_ego": wandb.Video(process_for_wandb(ego_video.to(self.device)), fps=8, format="mp4"),
-                "val/generated_exo": wandb.Video(process_for_wandb(pred_video), fps=8, format="mp4"),
-                "val/ground_truth": wandb.Video(process_for_wandb(exo_video_gt), fps=8, format="mp4"),
+                "val/source": wandb.Video(process_for_wandb(source_video.to(self.device)), fps=8, format="mp4"),
+                "val/generated": wandb.Video(process_for_wandb(pred_video), fps=8, format="mp4"),
+                "val/ground_truth": wandb.Video(process_for_wandb(target_video_gt), fps=8, format="mp4"),
                 "global_step": self.global_step
             })
             
@@ -405,8 +400,9 @@ class ViBTTrainer:
                     
                 ego_video = batch['ego_video'].to(self.device)
                 exo_video = batch['exo_video'].to(self.device)
+                prompt = batch['prompt']
                 
-                prompts = [self.cfg.training.instruction] * ego_video.shape[0]
+                prompts = [prompt] * ego_video.shape[0]
                 
                 loss = self.compute_loss(ego_video, exo_video, prompts)
                 loss = loss / accum_steps

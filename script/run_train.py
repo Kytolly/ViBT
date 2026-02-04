@@ -18,16 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# -----------------------------------------------------------------------------
-# 2. 导入配置和训练器
-# -----------------------------------------------------------------------------
-try:
-    from vibt.env import CONFIG
-    from vibt.train import ViBTTrainer
-except ImportError as e:
-    print(f"❌ Import Error: {e}")
-    print(f"   Current sys.path: {sys.path}")
-    sys.exit(1)
+from vibt.env import CONFIG
+from vibt.train import ViBTTrainer
+from vibt.dataset_wrapper import Options, FollowBenchDatasetWrapper
 
 def main():
     print(f"==================================================")
@@ -41,8 +34,17 @@ def main():
     print(f"==================================================\n")
 
     # 初始化训练器 (传入全局配置)
-    trainer = ViBTTrainer(CONFIG)
+    opt = Options()
+    opt.root = CONFIG.dataset.root
+    opt.phase = CONFIG.dataset.phase
+    opt.index = CONFIG.dataset.index
+    opt.height = CONFIG.dataset.height
+    opt.width = CONFIG.dataset.width
+    opt.clip_len = CONFIG.dataset.clip_len
+    opt.stride = CONFIG.dataset.stride
     
+    dataset = FollowBenchDatasetWrapper(opt)
+    trainer = ViBTTrainer(CONFIG, dataset)
     # 开始训练
     trainer.train()
 

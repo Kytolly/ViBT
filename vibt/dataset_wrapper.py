@@ -22,8 +22,8 @@ class Options:
     root:           str  = CONFIG.dataset.root
     index:          str  = CONFIG.dataset.index
     phase:          str  = CONFIG.dataset.phase
-    clip_len:       int  = CONFIG.dataset.clip_len  # 生成的帧数 (e.g., 49)
-    stride:         int  = CONFIG.dataset.stride    # 采样间隔 (e.g., 4)
+    clip_len:       int  = CONFIG.dataset.clip_len
+    stride:         int  = CONFIG.dataset.stride
     height:         int  = CONFIG.dataset.height   
     width:          int  = CONFIG.dataset.width
     batch_size:     int  = CONFIG.dataset.batch_size                                      
@@ -35,7 +35,6 @@ class FollowBenchDatasetWrapper(Dataset):
         self.opt = opt
         self.data_root = os.path.join(self.opt.root, self.opt.phase)
         self.dataset = self._load_index()
-        self.ids = list(self.dataset.keys())
         
         # 图像/视频的后处理变换 (读取后执行)
         self.pixel_transform = transforms.Compose([
@@ -154,8 +153,9 @@ class FollowBenchDatasetWrapper(Dataset):
 
         return {
             'video_id': vid_id,
-            'ego_video': ego_tensor,
-            'exo_video': exo_tensor,
+            'source_video': ego_tensor,
+            'target_video': exo_tensor,
+            'prompt': CONFIG.dataset.instruction,
             'ref_image': ref_tensor,
         }
 
@@ -245,15 +245,15 @@ class Style1000DatasetWrapper(Dataset):
                 item = self.dataset[index]
                 
                 # 映射字段：destyle (x0) -> style (x1)
-                ego_path = item['destyle']
-                exo_path = item['style']
+                source_path = item['destyle']
+                target_path = item['style']
                 prompt = item.get('caption', "")
 
                 # 获取视频读取器以确定长度
-                vr_ego = VideoReader(os.path.join(self.data_root, ego_path))
-                vr_exo = VideoReader(os.path.join(self.data_root, exo_path))
+                vr_source = VideoReader(os.path.join(self.data_root, source_path))
+                vr_target = VideoReader(os.path.join(self.data_root, target_path))
                 
-                min_len = min(len(vr_ego), len(vr_exo))
+                min_len = min(len(vr_source), len(vr_target))
                 needed = (self.opt.clip_len - 1) * self.opt.stride + 1
                 
                 if min_len < needed:
@@ -263,14 +263,14 @@ class Style1000DatasetWrapper(Dataset):
                 max_start = min_len - needed
                 start_idx = random.randint(0, max_start) if self.opt.phase == 'train' else 0
                 
-                ego_video = self._get_video_tensor(ego_path, start_idx)
-                exo_video = self._get_video_tensor(exo_path, start_idx)
+                source_video = self._get_video_tensor(source_path, start_idx)
+                target_video = self._get_video_tensor(target_path, start_idx)
 
                 return {
-                    "ego_video": ego_video,   # x0
-                    "exo_video": exo_video,   # x1
+                    "source_video": source_video,   # x0
+                    "target_video": target_video,   # x1
                     "prompt": prompt,
-                    "video_id": ego_path
+                    "video_id": index
                 }
             except Exception as e:
                 index = random.randint(0, len(self.dataset) - 1)
