@@ -400,9 +400,9 @@ class ViBTTrainer:
                     
                 source_video = batch['source_video'].to(self.device)
                 target_video = batch['target_video'].to(self.device)
-                prompt = batch['prompt']
+                prompt_batch = batch['prompt']
                 
-                prompts = [prompt] * source_video.shape[0]
+                prompts = [p for p in prompt_batch] * source_video.shape[0]
                 
                 loss = self.compute_loss(source_video, target_video, prompts)
                 loss = loss / accum_steps

@@ -66,7 +66,7 @@ class WanModel(nn.Module):
     def encode_prompt(self, prompts: list[str], max_length: int = 512):
         """
         显式编码文本提示
-        """
+        """   
         text_inputs = self.tokenizer(
             prompts,
             padding="max_length",
