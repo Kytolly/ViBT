@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, Any
 from decord import VideoReader, cpu
+import logging
+from tqdm import tqdm
 
 from .env import CONFIG
 
@@ -286,3 +288,102 @@ class Style1000DatasetWrapper(Dataset):
                 continue
         
         raise RuntimeError("Failed to load data after multiple retries.")
+    
+class InMemoryLatentDataset(Dataset):
+    def __init__(self, root_dir, cache_folder="latents_cache_v3_norm"):
+        self.cache_dir = os.path.join(root_dir, cache_folder)
+        self.data = []
+        
+        if not os.path.exists(self.cache_dir):
+            raise FileNotFoundError(f"Cache dir not found: {self.cache_dir}. Please run prepare_latents.py first.")
+            
+        files = sorted([f for f in os.listdir(self.cache_dir) if f.endswith('.pt')])
+        logger.info(f"🚀 Loading {len(files)} latents into RAM...")
+        
+        # 即使 2000 个视频，Latent 总大小也就 3GB 左右，完全可以常驻内存
+        for f in tqdm(files, desc="Loading Cache"):
+            try:
+                # map_location='cpu' 确保不占用显存
+                self.data.append(torch.load(os.path.join(self.cache_dir, f), map_location='cpu'))
+            except Exception as e:
+                logger.warning(f"Error loading {f}: {e}")
+                
+        logger.info(f"✅ Loaded {len(self.data)} samples ready for training.")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        # 零 IO 开销
+        return self.data[index]
+
+# ==========================================
+# 核心：自动化预处理逻辑
+# ==========================================
+def ensure_latents_cached(cfg, opt):
+    """
+    检查 Latent 缓存，如果不存在则自动生成。
+    """
+    # 定义缓存路径 (包含关键参数以防混淆)
+    cache_name = f"latents_cache_{opt.clip_len}f_{opt.height}x{opt.width}_v2"
+    cache_dir = os.path.join(opt.root, cache_name)
+    
+    # 1. 检查是否已完成 (简单检查文件数量是否足够)
+    # 这里假设 Style1000 约有 1000+ 数据
+    if os.path.exists(cache_dir) and len(os.listdir(cache_dir)) > 100:
+        logger.info(f"✅ Cache hit: {cache_dir}. Skipping generation.")
+        return cache_dir
+
+    # 2. 如果未完成，开始生成
+    logger.info(f"⚠️ Cache missing at {cache_dir}. Starting JIT preprocessing...")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # 临时加载 DatasetWrapper (读取原始视频)
+    # 注意：在这里我们可以使用最优化的配置来跑预处理
+    from .dataset_wrapper import Style1000DatasetWrapper # 引用自身
+    raw_dataset = Style1000DatasetWrapper(opt)
+    raw_loader = DataLoader(raw_dataset, batch_size=1, shuffle=False, num_workers=8)
+
+    # 加载 VAE (仅 VAE)
+    logger.info("loading VAE for preprocessing...")
+    device = "cuda"
+    model = WanModel.from_pretrained(cfg.model.path, device=device, dtype=torch.bfloat16)
+    model.transformer = None # 卸载 Transformer 节省显存
+    
+    logger.info(f"🔢 Processing {len(raw_dataset)} videos...")
+    
+    with torch.no_grad():
+        for i, batch in tqdm(enumerate(raw_loader), total=len(raw_loader)):
+            # 拿到原始数据 (uint8)
+            # 归一化 [-1, 1]
+            src = batch['source_video'].to(device, dtype=torch.bfloat16).div(127.5).sub(1.0)
+            tgt = batch['target_video'].to(device, dtype=torch.bfloat16).div(127.5).sub(1.0)
+            
+            # Encode + Norm
+            def _enc(x):
+                dist = model.vae.encode(x).latent_dist
+                z = dist.mode()
+                if hasattr(model.vae.config, "latents_mean"):
+                    mean = torch.tensor(model.vae.config.latents_mean).to(z)
+                    std = torch.tensor(model.vae.config.latents_std).to(z)
+                    z = (z - mean) / std
+                return z.cpu()
+
+            z_src = _enc(src)
+            z_tgt = _enc(tgt)
+            
+            # 保存
+            video_id = batch['video_id'][0].item()
+            torch.save({
+                "source": z_src.squeeze(0),
+                "target": z_tgt.squeeze(0),
+                "prompt": batch['prompt'][0],
+                "id": video_id
+            }, os.path.join(cache_dir, f"{video_id}.pt"))
+            
+    # 清理 VAE 显存，为后续训练腾地
+    del model
+    torch.cuda.empty_cache()
+    logger.info("✅ Preprocessing done. Starting training...")
+    
+    return cache_dir

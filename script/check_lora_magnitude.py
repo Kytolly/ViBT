@@ -56,7 +56,7 @@ def check_lora_weights(ckpt_path):
     max_b = np.max(b_maxs)
     
     print(f"   Avg Abs Magnitude: {avg_b:.8f}")
-    print(f"   Max Value found:   {max_max_b:.8f}")
+    print(f"   Max Value found:   {max_b:.8f}")
     
     # --- 诊断结论 ---
     print(f"\n🩺 Diagnosis:")

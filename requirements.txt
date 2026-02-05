@@ -1,0 +1,28 @@
+# --- 核心库 ---
+diffusers>=0.30.0
+transformers>=4.40.0     # 修复：原 5.0.0 可能是本地开发版，改用最新稳定版
+accelerate>=0.33.0
+peft>=0.12.0             # LoRA 微调必须
+modelscope               # Wan 模型加载可能需要
+
+# --- 视频处理 ---
+decord                   # 核心：高效视频解码
+moviepy                  # 视频编辑/保存
+av                       # PyAV，备用视频处理
+pillow                   # 图像处理
+
+# --- 训练与监控 ---
+wandb                    # 实验记录
+tqdm                     # 进度条
+omegaconf                # 配置文件解析
+prodigyopt               # [关键] 论文推荐的优化器
+einops                   # 张量操作
+
+# --- 基础工具 ---
+numpy
+scipy
+pandas
+sentencepiece            # Tokenizer 依赖
+protobuf
+filelock
+huggingface_hub

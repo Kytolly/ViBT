@@ -11,7 +11,11 @@ import prodigyopt
 import logging
 
 from .wan import WanModel
-from .dataset_wrapper import Options
+from .dataset_wrapper import (
+    Options, 
+    ensure_latents_cached, 
+    InMemoryLatentDataset
+)
 from .env import ViBTEnvConfig
 from .inference import generate_vibt
 
@@ -148,18 +152,23 @@ class ViBTTrainer:
             self.optimizer = torch.optim.AdamW(self.params_to_optimize, lr=lr)
 
     def _setup_dataloader(self):
+        # ... 配置 opt ...
         opt = Options()
         for k, v in self.cfg.dataset.items():
             if hasattr(opt, k): setattr(opt, k, v)
-            
-        logger.info(f"📚 Loading dataset: {len(self.dataset)} samples.")
+
+        cache_dir = ensure_latents_cached(self.cfg, opt)
+        
+        # 2. 使用极速内存 Dataset
+        self.dataset = InMemoryLatentDataset(cache_dir)
+        
+        logger.info(f"📚 Dataset Ready: {len(self.dataset)} samples in RAM.")
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=self.cfg.dataset.batch_size,
             shuffle=True,
-            num_workers=self.cfg.dataset.num_workers,
-            pin_memory=True,
-            persistent_workers=True
+            num_workers=0, # 关键：内存读取设为 0
+            pin_memory=True
         )
 
     def compute_loss(self, source_pixel, target_pixel, prompts):
