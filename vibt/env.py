@@ -52,8 +52,15 @@ class DatasetConfig:
 
 @dataclass
 class TrainConfig:
-    lr: float = 1e-4
+    optimizer: str = "prodigy"
+    lr: float = 1.0
+    weight_decay: float = 0.01
+    decouple: bool = True
+    use_bias_correction: bool = True
+    safeguard_warmup: bool = True
+    d_coef: float = 1.0
     epochs: int = 20
+    smooth_loss_factor: float =0.9
     gradient_accumulation_steps: int = 4
     save_interval: int = 100
     log_interval: int = 10

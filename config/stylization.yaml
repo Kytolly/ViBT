@@ -1,7 +1,7 @@
 project:
   name: "ViBT-Style1000"
   root: "/opt/liblibai-models/user-workspace2/users/xqy/project/ViBT"
-  output_dir: "outputs/stylization"
+  output_dir: "outputs/stylization-v2"
   logging_dir: "logs"
 
 model:
@@ -25,8 +25,14 @@ dataset:
 
 train:
   optimizer: "prodigy" 
-  lr: 1.0              
+  lr: 1.0
+  weight_decay: 0.01
+  decouple: true
+  use_bias_correction: true
+  safeguard_warmup: true
+  d_coef: 1.0
   epochs: 20
+  smooth_loss_factor: 0.9
   gradient_accumulation_steps: 1
   save_interval: 1000  # steps
   log_interval: 10     # steps
