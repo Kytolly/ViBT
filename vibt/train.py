@@ -162,7 +162,7 @@ class ViBTTrainer:
             persistent_workers=True
         )
 
-    def compute_loss(self, ego_pixel, exo_pixel, prompts):
+    def compute_loss(self, source_pixel, target_pixel, prompts):
         """
         Implementation strictly following Algorithm S1 in Supplementary Material.
         Ref: Tan et al., 2025, Vision Bridge Transformer at Scale, Page 16.
@@ -170,8 +170,8 @@ class ViBTTrainer:
         s = self.cfg.inference.noise_scale  # noise scale s 
         with torch.no_grad():
             prompt_embeds = self.model.encode_prompt(prompts)
-            x_0 = self.model.encode(ego_pixel)  # Source x0
-            x_1 = self.model.encode(exo_pixel)  # Target x1
+            x_0 = self.model.encode(source_pixel)  # Source x0
+            x_1 = self.model.encode(target_pixel)  # Target x1
 
         B = x_0.shape[0]
         D = x_0[0].numel() # latent dimension D 
@@ -211,7 +211,7 @@ class ViBTTrainer:
         
         # ==================== Step 7: Compute Loss ====================
         # "L_velocity = || (v_theta(x_t, t) - u_t) / alpha ||^2" [cite: 136, 577]
-        t_input = t * 1000
+        t_input = (1.0 - t) * 1000
         v_pred = self.model(
             hidden_states=x_t,
             timestep=t_input,
@@ -298,9 +298,9 @@ class ViBTTrainer:
             # 注意：generate_vibt 内部会处理 Normalization 和 Scheduler
             pred_tensor = generate_vibt(
                 model=self.model,
-                source_input=source, # 传入 Tensor ([-1, 1])
+                source_input=source,
                 prompt=prompt,
-                steps=20, # 快速验证
+                steps=20,
                 device=self.device,
                 shift_gamma=self.cfg.inference.shift_gamma,
                 noise_scale=self.cfg.inference.noise_scale,

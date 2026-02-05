@@ -1,9 +1,10 @@
 import torch
 import logging
+import numpy as np
 from diffusers.utils import load_video, export_to_video
+from diffusers import WanPipeline
 
-# 导入作者提供的原始模块（确保 wan.py 和 scheduler.py 已在 vibt 目录下）
-from vibt.wan import WanModel, encode_video, decode_latents
+from vibt.wan import WanModel, encode_video
 from vibt.scheduler import ViBTScheduler
 
 logger = logging.getLogger(__name__)
@@ -17,64 +18,107 @@ def generate_vibt(
     device: str = "cuda",
     shift_gamma: float = 5.0,
     noise_scale: float = 1.0,
-    guidance_scale: float = 1.5
+    guidance_scale: float = 1.5,
+    seed: int = 42
 ):
-    pipe = model.pipe
+    """
+    运行 ViBT 推理。
     
-    # 1. 替换为作者的 ViBTScheduler
-    # 作者的 Scheduler 处理了 1000->0 到 0->1 的数学映射
+    Args:
+        model: WanModel 实例
+        source_input: 视频路径 (str) 或 预处理后的 Tensor ([-1, 1], Shape [B, C, F, H, W])
+        prompt: 提示词
+        ...
+    """
+    pipe: WanPipeline = model.pipe
+    
+    # =======================================================
+    # 1. 准备 Scheduler (使用作者原生的 Backward Scheduler)
+    # =======================================================
     if not isinstance(pipe.scheduler, ViBTScheduler):
         logger.info("🔄 Replacing scheduler with Author's ViBTScheduler...")
-        # 必须使用 from_scheduler 来继承配置，并注入 noise_scale 和 shift_gamma
-        pipe.scheduler = ViBTScheduler.from_scheduler(
-            pipe.scheduler, 
-            noise_scale=noise_scale, 
-            shift_gamma=shift_gamma
-        )
-    else:
-        # 如果已经是 ViBTScheduler，更新参数
-        pipe.scheduler.set_parameters(noise_scale=noise_scale, shift_gamma=shift_gamma)
+        pipe.scheduler = ViBTScheduler.from_scheduler(pipe.scheduler)
+        pipe.scheduler.set_parameters(noise_scale=noise_scale, shift_gamma=shift_gamma, seed=seed)
 
-    # 2. 编码 (使用 wan.py 中的 encode_video 以确保 Normalization)
-    logger.info("🎬 Encoding source video with Normalization...")
+    # =======================================================
+    # 2. 准备 Latents (Source) 并进行 Normalization
+    # =======================================================
+    # 训练时模型见过的是 Normalized Latents，推理必须保持一致
+    
     if isinstance(source_input, str):
+        logger.info(f"🎬 Loading video from {source_input}...")
         video_frames = load_video(source_input)
         latents = encode_video(pipe, video_frames)
+        
     elif isinstance(source_input, torch.Tensor):
-        # 即使是 Tensor，也建议暂时转回 encode_video 能处理的格式，
-        # 或者你需要手动把 wan.py 的 encode 逻辑搬过来。
-        # 这里为了稳妥，直接调用 wan.py 里的逻辑（假设 source_input 是预处理好的 tensor）
-        
-        # 注意：encode_video 内部调用了 preprocess_video，它期望 List[PIL] 或 uint8 tensor
-        # 如果传入的是 float tensor [-1, 1]，需要手动归一化
-        # 这里建议直接复用之前定义的 _encode_latents_with_norm 逻辑 (Mode模式)
+        logger.info("🎬 Encoding tensor input (Validation)...")
         with torch.no_grad():
-             # ... 确保这里执行了 (z - mean) * inverse_std
-             # 简单起见，这里假设你已经在外部处理好了，或者在此处手动实现 wan.py 的逻辑
-             pass 
-        # ⚠️ 强烈建议：直接使用 wan.py 里的 encode_video 函数处理原始视频帧
-        # 如果必须处理 Tensor，请把 wan.py 里的 encode_video 逻辑复制过来
-        
-    # 3. 推理 (使用标准 Pipeline)
-    logger.info(f"🎨 Running Standard Pipeline (Steps={steps}, Gamma={shift_gamma})...")
+            pixel_values = source_input.to(device=device, dtype=model.vae.dtype)
+            
+            # 1. VAE Encode
+            dist = model.vae.encode(pixel_values).latent_dist # [B, C, F, H, W]
+            z = dist.mode() # 确定性
+            
+            # 2. Normalization
+            # 必须与训练时的分布对齐
+            vae_config = model.vae.config
+            
+            # 获取均值和方差参数
+            # 注意: 作者代码中 latents_std 实际上是 1/std (inverse std)
+            # vibt/wan.py: latents_std = 1.0 / torch.tensor(pipe.vae.config.latents_std)
+            
+            if hasattr(vae_config, "latents_mean"):
+                latents_mean = torch.tensor(vae_config.latents_mean).view(1, -1, 1, 1, 1).to(z.device, z.dtype)
+                # 计算 1/std
+                latents_std_inv = 1.0 / torch.tensor(vae_config.latents_std).view(1, -1, 1, 1, 1).to(z.device, z.dtype)
+                
+                # 执行归一化: (z - mean) / std
+                latents = (z - latents_mean) * latents_std_inv
+            else:
+                latents = z # Fallback
+                
+    # =======================================================
+    # 3. 执行推理 (Standard Pipeline Call)
+    # =======================================================
+    # 此时 latents 代表 Source ($T=1000$ 对应的状态)
+    # Pipeline 会从 Scheduler 获取 timesteps (1000 -> 0)
     
-    # 作者的 Scheduler 允许我们直接使用 pipe，把 latents 传给 latents 参数
-    # 注意：在 T2V 任务中，通常 latents 是初始噪声。
-    # 但在 ViBT (Video2Video) 中，source_latents 是起点。
-    # 标准 Pipeline 可能会把 latents 当作初始噪声加噪。
-    # 关键点：作者的 Scheduler step 函数逻辑是 x + delta * v + noise。
-    # 只要传入的 latents 是 Source，并且 timesteps 是从 1000 开始，
-    # 第一次 step 会计算 Source -> t_next 的变换。
+    logger.info(f"🎨 Running Inference (Backward 1000->0, Steps={steps})...")
     
+    # 扩展 Prompt 以适配 Batch Size
+    # 如果 latents 是 [B, C, F, H, W]，prompt 需要是 list 长度 B
+    batch_size = latents.shape[0]
+    if isinstance(prompt, str):
+        prompts = [prompt] * batch_size
+    else:
+        prompts = prompt
+
     output_frames = pipe(
-        prompt=prompt,
-        latents=latents, # 将 Source Latents 传给 pipe
+        prompt=prompts,
+        latents=latents,         # 将 Source Latents 作为初始状态传入
         num_inference_steps=steps,
         guidance_scale=guidance_scale,
-        output_type="np" 
-    ).frames[0] # pipe 返回的是 VideoOutput, frames 是 List[np.array]
+        output_type="np"         # 返回 numpy [B, F, H, W, C] in [0, 1]
+    ).frames
     
-    # 转换为 Tensor 返回，保持接口一致性
-    output_tensor = torch.from_numpy(output_frames).permute(3, 0, 1, 2).unsqueeze(0) # [1, C, F, H, W]
+    # =======================================================
+    # 4. 格式转换 (适配 Trainer)
+    # =======================================================
+    # Trainer 期望: Tensor [B, C, F, H, W] in [-1, 1]
+    # 当前 output_frames: List of List of np.array (如果 batch>1) 或 List of np.array
+    
+    # pipe 返回的是 VideoOutput, frames 是 List[np.ndarray] (每个元素是一个视频)
+    # np.ndarray shape: [F, H, W, C]
+    
+    tensor_list = []
+    for vid_np in output_frames:
+        # np [F, H, W, C] -> Tensor [C, F, H, W]
+        vid_tensor = torch.from_numpy(vid_np).permute(3, 0, 1, 2).float()
+        tensor_list.append(vid_tensor)
+        
+    output_tensor = torch.stack(tensor_list).to(device) # [B, C, F, H, W]
+    
+    # [0, 1] -> [-1, 1]
+    output_tensor = (output_tensor * 2.0) - 1.0
     
     return output_tensor
