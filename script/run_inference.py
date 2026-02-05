@@ -75,9 +75,9 @@ def main():
                 batch = dataset[idx]
                 
                 # 拿到了！
-                source_input = batch['ego_video'] # [C, F, H, W]
+                source_input = batch['source_video'] # [C, F, H, W]
                 # 如果有 GT，也可以顺便拿出来对比
-                gt_video = batch['exo_video']
+                gt_video = batch['target_video']
                 print(f"   ✅ Successfully loaded index {idx}")
                 break
             except Exception as e:
