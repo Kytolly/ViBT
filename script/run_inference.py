@@ -19,7 +19,6 @@ from vibt.dataset_wrapper import FollowBenchDatasetWrapper, Options
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt_path", type=str, required=True, help="Path to checkpoint folder")
-    # [修改] video_path 变为可选
     parser.add_argument("--video_path", type=str, default=None, help="Input video path (Optional)")
     parser.add_argument("--prompt", type=str, default="Transform ego view to third-person view")
     parser.add_argument("--output", type=str, default="output.mp4")

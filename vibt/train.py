@@ -236,8 +236,12 @@ class ViBTTrainer:
             epoch_loss = 0.0
             
             for step, batch in enumerate(pbar):
-                source = batch['source_video'].to(self.device)
-                target = batch['target_video'].to(self.device)
+                source_uint8 = batch['source_video'].to(self.device, non_blocking=True)
+                target_uint8 = batch['target_video'].to(self.device, non_blocking=True)
+                dtype = self.model.transformer.dtype
+                source = source_uint8.to(dtype=dtype).div(127.5).sub(1.0)
+                target = target_uint8.to(dtype=dtype).div(127.5).sub(1.0)
+                
                 prompts = [p for p in batch['prompt']] * source.shape[0]
                 
                 # 计算 Loss

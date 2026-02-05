@@ -200,13 +200,7 @@ class Style1000DatasetWrapper(Dataset):
         # data_root 指向 style1000 文件夹
         self.data_root = opt.root 
         self.dataset = self._load_index(opt.index)
-        
-        # 预处理管线：与 Wan2.1 VAE 对齐
-        self.pixel_transform = transforms.Compose([
-            transforms.Resize((opt.height, opt.width)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
+        self.resize_transform = transforms.Resize((opt.height, opt.width))
 
     def _load_index(self, index_path):
         # 支持绝对路径或相对于 root 的路径
@@ -224,20 +218,33 @@ class Style1000DatasetWrapper(Dataset):
 
     def _get_video_tensor(self, rel_path, start_idx):
         path = os.path.join(self.data_root, rel_path)
+        # 使用 CPU 解码
         vr = VideoReader(path, ctx=cpu(0))
         
-        # 计算采样帧索引序列
         batch_indices = start_idx + np.arange(self.opt.clip_len) * self.opt.stride
-        frames_np = vr.get_batch(batch_indices).asnumpy()
+        frames_np = vr.get_batch(batch_indices).asnumpy() # [T, H, W, C] (uint8)
         
-        # 处理每一帧
+        # [优化] 手动处理：Numpy -> PIL Resize -> Tensor (Uint8)
         tensors = []
         for i in range(frames_np.shape[0]):
             img = Image.fromarray(frames_np[i])
-            tensors.append(self.pixel_transform(img))
+            img_resized = self.resize_transform(img)
+            # PIL -> Torch Tensor (uint8, 0-255, [C, H, W])
+            # 注意：transforms.ToTensor() 会自动除以 255 转 float，所以我们用 torch.from_numpy
+            # 但为了兼容 resize 后的 PIL 对象，最快的方式是：
+            # PIL Resize -> np.array -> torch.from_numpy
             
-        # 堆叠并转换为 [C, T, H, W]
-        return torch.stack(tensors).permute(1, 0, 2, 3)
+            # 这种方式最稳健：
+            tensors.append(torch.from_numpy(np.array(img_resized)))
+            
+        # Stack -> [T, H, W, C]
+        video_tensor = torch.stack(tensors)
+        
+        # Permute -> [C, T, H, W]
+        video_tensor = video_tensor.permute(3, 0, 1, 2).contiguous()
+        
+        # 此时 video_tensor 是 uint8 类型，范围 [0, 255]
+        return video_tensor
 
     def __getitem__(self, index):
         retries = 0
