@@ -328,37 +328,82 @@ class ViBTTrainer:
             self.run_validation_sampling(tag)
         except Exception as e:
             logger.warning(f"⚠️ Validation sampling failed: {e}")
+    
+    def _encode_latents_with_norm(self, pixel_values):
+        # 1. VAE Encode
+        with torch.no_grad():
+            pixel_values = pixel_values.to(dtype=self.model.vae.dtype, device=self.device)
+            dist = self.model.vae.encode(pixel_values).latent_dist
+            # 训练时通常采样 (sample)，推理用 mode
+            z = dist.sample()
+            
+            # 2. [关键修复] Normalization
+            # 获取 mean 和 std
+            if not hasattr(self, 'latents_mean'):
+                self.latents_mean = torch.tensor(self.model.vae.config.latents_mean).view(1, -1, 1, 1, 1).to(z.device, z.dtype)
+                self.latents_std_inv = 1.0 / torch.tensor(self.model.vae.config.latents_std).view(1, -1, 1, 1, 1).to(z.device, z.dtype)
+            
+            # 将 mean/std 移动到正确设备（如果尚未移动）
+            if self.latents_mean.device != z.device:
+                self.latents_mean = self.latents_mean.to(z.device)
+                self.latents_std_inv = self.latents_std_inv.to(z.device)
 
+            # 执行标准化: (z - mean) / std
+            latents = (z - self.latents_mean) * self.latents_std_inv
+            
+        return latents
+    
     def compute_loss(self, ego_pixel, exo_pixel, prompts):
+        # 0. 获取配置中的噪声缩放 s
+        # 论文指出 s 需在训练和推理保持一致。
+        # 你的配置文件中 s 定义在 inference.noise_scale，这里直接复用。
+        s = self.cfg.inference.noise_scale 
+        
         prompt_embeds = self.model.encode_prompt(prompts)
         
         with torch.no_grad():
-            z_0 = self.model.encode(ego_pixel) 
-            z_1 = self.model.encode(exo_pixel) 
+            z_0 = self._encode_latents_with_norm(ego_pixel)  # Source
+            z_1 = self._encode_latents_with_norm(exo_pixel)  # Target
             
         B = z_0.shape[0]
-        # t ~ U(0, 1)
+        # [关键] 获取总像素维度 D = C * F * H * W
+        # 用于将 MSE 还原为 Sum of Squared Norm
+        D = z_0[0].numel()
+        
+        # 1. 采样时间 t ~ U(0, 1)
         t = torch.rand((B,), device=self.device, dtype=z_0.dtype)
         
-        # epsilon ~ N(0, I)
+        # 2. 采样标准高斯噪声 epsilon ~ N(0, I)
         epsilon = torch.randn_like(z_0)
         t_expand = t.view(B, 1, 1, 1, 1)
         
-        # x_t = (1-t)x_0 + t*x_1 + sqrt(t(1-t)) * epsilon
-        bridge_noise_coeff = torch.sqrt(t_expand * (1 - t_expand))
+        # 3. 构造中间状态 x_t (Algorithm S1, Step 3)
+        # 公式: x_t = (1-t)x_0 + t*x_1 + s * sqrt(t(1-t)) * epsilon
+        # [修改] 显式乘以 s
+        bridge_noise_coeff = s * torch.sqrt(t_expand * (1 - t_expand))
         z_t = (1 - t_expand) * z_0 + t_expand * z_1 + bridge_noise_coeff * epsilon
         
-        # u_t = (x_1 - x_0) - sqrt(t/(1-t)) * epsilon
+        # 4. 计算目标速度 u_t (Algorithm S1, Step 4)
+        # 公式: u_t = (x_1 - x_t) / (1-t)
+        # 推导: u_t = (x_1 - x_0) - s * sqrt(t/(1-t)) * epsilon
         time_safe = torch.clamp(t_expand, min=1e-5, max=1.0 - 1e-5)
-        u_t_noise_coeff = torch.sqrt(time_safe / (1 - time_safe))
+        
+        # [修改] 显式乘以 s
+        u_t_noise_coeff = s * torch.sqrt(time_safe / (1 - time_safe))
         target_v = (z_1 - z_0) - u_t_noise_coeff * epsilon
         
-        # alpha^2 = 1 + (t * D) / ((1-t) * ||x_1 - x_0||^2)
-        D = z_0[0].numel()
-        diff_norm_sq = torch.sum((z_1 - z_0) ** 2, dim=[1, 2, 3, 4]).view(B, 1, 1, 1, 1)
+        # 5. 计算归一化因子 Alpha (Algorithm S1, Step 5)
+        # 公式: alpha^2 = 1 + (s^2 * t * D) / ((1-t) * ||x_1 - x_0||^2)
         
-        alpha_sq = 1 + (time_safe * D) / ((1 - time_safe) * diff_norm_sq + 1e-6)
+        # 计算 ||x_1 - x_0||^2 (Sum of Squares)
+        diff_norm_sq = torch.sum((z_1 - z_0) ** 2, dim=[1, 2, 3, 4]).view(B, 1, 1, 1, 1)
+        diff_norm_sq = torch.clamp(diff_norm_sq, min=1e-6) # 防止除零
+        
+        # [修改] 分子部分乘以 s^2
+        alpha_sq = 1 + (time_safe * D * (s**2)) / ((1 - time_safe) * diff_norm_sq)
         alpha = torch.sqrt(alpha_sq)
+        
+        # 6. 模型预测
         t_input = t * 1000 
         
         pred_v = self.model(
@@ -367,8 +412,13 @@ class ViBTTrainer:
             encoder_hidden_states=prompt_embeds
         )
 
-        # Loss = || (pred_v - u_t) / alpha ||^2
-        loss = F.mse_loss(pred_v / alpha, target_v / alpha)
+        # 7. 计算稳定速度匹配损失 (Algorithm S1, Step 6)
+        # 论文目标: L = || (v - u) / alpha ||^2  (范数平方)
+        # F.mse_loss 计算的是 Mean Squared Error (除以了 D)
+        # 为了还原范数平方，需要乘以 D
+        
+        mse_loss = F.mse_loss(pred_v / alpha, target_v / alpha)
+        loss = mse_loss * D
         
         return loss
 

@@ -7,7 +7,7 @@ project:
 model:
   path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B-Diffusers"
   use_lora: true
-  lora_rank: 64
+  lora_rank: 128
   lora_alpha: 16
 
 dataset:
@@ -24,7 +24,8 @@ dataset:
   num_workers: 32
 
 train:
-  lr: 1e-4
+  optimizer: "prodigy" 
+  lr: 1.0              
   epochs: 20
   gradient_accumulation_steps: 1
   save_interval: 1000  # steps
@@ -32,7 +33,7 @@ train:
   mixed_precision: "bf16"
   gradient_checkpointing: True
   instruction: ""
-  resume_path: "outputs/stylization/checkpoint_step_75"
+  resume_path: ""
 
 inference:
   num_inference_steps: 28
