@@ -31,7 +31,7 @@ train:
   use_bias_correction: true
   safeguard_warmup: true
   d_coef: 1.0
-  epochs: 20
+  epochs: 25
   smooth_loss_factor: 0.9
   gradient_accumulation_steps: 1
   save_interval: 1000  # steps
@@ -45,3 +45,4 @@ inference:
   num_inference_steps: 28
   noise_scale: 1.0
   shift_gamma: 5.0
+  seed: 42

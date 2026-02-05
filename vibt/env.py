@@ -74,6 +74,7 @@ class InferenceConfig:
     num_inference_steps: int = 28
     noise_scale: float = 1.0
     shift_gamma: float = 5.0
+    seed: int = 42
 
 @dataclass
 class ViBTEnvConfig:

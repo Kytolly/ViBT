@@ -26,3 +26,5 @@ sentencepiece            # Tokenizer 依赖
 protobuf
 filelock
 huggingface_hub
+torch
+torchvision
