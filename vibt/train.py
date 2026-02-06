@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 import torch
 import torchvision
 import torch.nn.functional as F
@@ -9,6 +10,7 @@ import wandb
 from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
 import prodigyopt
 import logging
+import torch._dynamo
 
 # 项目内引用
 from .wan import WanModel
@@ -27,6 +29,7 @@ class ViBTTrainer:
         self.cfg = cfg
         self.device = "cuda"
         self.avg_loss = None
+        self.metrics_buffer = {}
         
         self._init_workspace()
         self._init_wandb()
@@ -101,15 +104,22 @@ class ViBTTrainer:
             )
             self.model.transformer = get_peft_model(self.model.transformer, lora_config)
             self.model.transformer.print_trainable_parameters()
-            self.params_to_optimize = filter(lambda p: p.requires_grad, self.model.transformer.parameters())
+            self.params_to_optimize = list(filter(lambda p: p.requires_grad, self.model.transformer.parameters()))
         else:
             logger.info("🔓 Unfreezing Transformer for Full-Parameter Training...")
             if self.cfg.train.gradient_checkpointing:
                 self.model.transformer.enable_gradient_checkpointing()
             for param in self.model.transformer.parameters():
                 param.requires_grad = True
-            self.params_to_optimize = self.model.transformer.parameters()
-
+            self.params_to_optimize = list(self.model.transformer.parameters())
+        
+        try:
+            torch._dynamo.config.suppress_errors = True
+            logger.info("⚡ Enabling torch.compile for Transformer...")
+            self.model.transformer = torch.compile(self.model.transformer, mode="default") 
+        except Exception as e:
+            logger.warning(f"⚠️ torch.compile failed: {e}. Falling back to eager mode.")
+            
     def _setup_optimizer(self):
         opt_type = self.cfg.train.optimizer
         if opt_type == "prodigy":
@@ -196,8 +206,18 @@ class ViBTTrainer:
         # 6. Loss Calculation
         # Loss = || (v - u) / alpha ||^2
         loss = F.mse_loss(v_pred / alpha, u_t / alpha)
-        return loss
-
+        
+        v_norm = torch.norm(v_pred, p=2, dim=[1, 2, 3, 4]).mean()
+        u_norm = torch.norm(u_t, p=2, dim=[1, 2, 3, 4]).mean()
+        logs = {
+            "metrics/v_pred_norm": v_norm.item(),   # 模型预测的力度
+            "metrics/u_target_norm": u_norm.item(), # 实际需要的力度
+            "metrics/diff_sq": diff_sq.mean().item(), # Source和Target的差异大小
+            "metrics/alpha_mean": alpha.mean().item(), # 缩放因子大小
+            "metrics/t_mean": t.mean().item() # 确保采样均匀
+        }
+        return loss, logs
+    
     def train(self):
         self.model.transformer.train()
         accum_steps = self.cfg.train.gradient_accumulation_steps
@@ -216,7 +236,7 @@ class ViBTTrainer:
                 prompts = batch['prompt']
                 
                 # 计算 Loss (传入 Latent)
-                loss = self.compute_loss(source, target, prompts)
+                loss, step_logs = self.compute_loss(source, target, prompts)
                 
                 # 反向传播
                 (loss / accum_steps).backward()
@@ -227,23 +247,51 @@ class ViBTTrainer:
                 if self.avg_loss is None: self.avg_loss = current_loss
                 else: self.avg_loss = 0.9 * self.avg_loss + 0.1 * current_loss
                 
+                # 接受训练 log
+                for k, v in step_logs.items():
+                    self.metrics_buffer[k] = self.metrics_buffer.get(k, 0.0) + v
+                
                 if (step + 1) % accum_steps == 0:
-                    torch.nn.utils.clip_grad_norm_(self.params_to_optimize, 1.0)
+                    current_grad_norm = torch.nn.utils.clip_grad_norm_(self.params_to_optimize, 1.0)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
                     self.global_step += 1
                     
                     if self.global_step % self.cfg.train.log_interval == 0:
-                        wandb.log({
+                        # 计算平均值
+                        log_dict = {
                             "train/loss": current_loss,
                             "train/loss_smooth": self.avg_loss,
+                            "train/loss(log)": math.log10(current_loss + 1e-12),
+                            "train/loss_smooth(log)": math.log10(self.avg_loss + 1e-12),
                             "train/lr": self.optimizer.param_groups[0]['lr'],
-                            "train/epoch": epoch
-                        })
-                        pbar.set_postfix({"loss": f"{self.avg_loss:.4f}"})
+                            "train/prodigy_d": self.optimizer.param_groups[0]['d'],
+                            "train/epoch": epoch,
+                            "train/grad_norm": current_grad_norm.item()
+                        }
+                        
+                        # 加入监控指标
+                        for k, v in self.metrics_buffer.items():
+                            log_dict[k] = v / self.cfg.train.log_interval
+                            
+                        wandb.log(log_dict)
+                        
+                        # 打印关键信息到控制台，方便直观查看
+                        if self.global_step % 100 == 0: # 每100步打印一次
+                            logger.debug(
+                                f"\n 📊 Step {self.global_step} Monitor:\n"
+                                f"   V_pred: {log_dict.get('metrics/v_pred_norm', 0):.4f} (Prediction Mag)\n"
+                                f"   U_target: {log_dict.get('metrics/u_target_norm', 0):.4f} (Target Mag)\n"
+                                f"   Grad: {current_grad_norm.item():.4f}\n"
+                            )
+
+                        # 清空 Buffer
+                        self.metrics_buffer = {}
                     
                     if self.global_step % self.cfg.train.save_interval == 0:
                         self.save_checkpoint(f"step_{self.global_step}", epoch)
+                        
+                    pbar.set_postfix({"avg_loss": f"{self.avg_loss:.4f}, step_loss: {current_loss:.4f}"})
 
             logger.info(f"🏁 Epoch {epoch+1} Avg Loss: {epoch_loss / len(self.dataloader):.4f}")
             self.save_checkpoint(f"epoch_{epoch+1}", epoch)
@@ -369,13 +417,21 @@ class ViBTTrainer:
         logger.info(f"🔄 Resuming from {checkpoint_path}...")
         if self.cfg.model.use_lora:
             from peft import set_peft_model_state_dict
-            if os.path.exists(p := os.path.join(checkpoint_path, "adapter_model.bin")):
-                set_peft_model_state_dict(self.model.transformer, torch.load(p, map_location=self.device))
+            lora_weights = os.path.join(checkpoint_path, "adapter_model.bin")
+            if os.path.exists(lora_weights):
+                set_peft_model_state_dict(self.model.transformer, torch.load(lora_weights, map_location=self.device))
+                logger.info(f"📂 Found bin. Loading weights from {lora_weights} OK!")
+            else:
+                raise FileNotFoundError(f"❌ Critical: No weights found in {checkpoint_path}")
         else:
             from safetensors.torch import load_file
-            if os.path.exists(p := os.path.join(checkpoint_path, "diffusion_pytorch_model.safetensors")):
-                self.model.transformer.load_state_dict(load_file(p), strict=False)
-        
+            transformer_weights_path = os.path.join(checkpoint_path, "diffusion_pytorch_model.safetensors")
+            if os.path.exists(transformer_weights_path):
+                self.model.transformer.load_state_dict(load_file(transformer_weights_path), strict=False)
+                logger.info(f"📂 Found safetensors. Loading weights from {transformer_weights_path} OK!") # ✅ 显式确认
+            else:
+                raise FileNotFoundError(f"❌ Critical: No weights found in {checkpoint_path}")
+            
         if os.path.exists(p := os.path.join(checkpoint_path, "training_state.pt")):
             state = torch.load(p, map_location=self.device)
             self.optimizer.load_state_dict(state["optimizer"])

@@ -30,7 +30,8 @@ class ViBTScheduler(UniPCMultistepScheduler):
             device=sample.device,
             dtype=sample.dtype,
         )
-        latents = sample + delta_t * model_output + eta * self.noise_scale * noise
+        # delta_t 似乎是负数 需要校验论文
+        latents = sample - delta_t * model_output + eta * self.noise_scale * noise
 
         return (latents,)
 

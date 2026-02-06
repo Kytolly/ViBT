@@ -6,9 +6,9 @@ project:
 
 model:
   path: "/opt/liblibai-models/user-workspace2/model_zoo/Wan2.1-T2V-1.3B-Diffusers"
-  use_lora: true
+  use_lora: false
   lora_rank: 128
-  lora_alpha: 16
+  lora_alpha: 128
 
 dataset:
   repo_id: ""
@@ -37,9 +37,9 @@ train:
   save_interval: 1000  # steps
   log_interval: 10     # steps
   mixed_precision: "bf16"
-  gradient_checkpointing: True
+  gradient_checkpointing: false
   instruction: ""
-  resume_path: ""
+  resume_path: "outputs/stylization-v2/checkpoint_step_15000"
 
 inference:
   num_inference_steps: 28
