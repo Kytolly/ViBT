@@ -1,7 +1,7 @@
 project:
   name: "ViBT-Style1000"
   root: "/opt/liblibai-models/user-workspace2/users/xqy/project/ViBT"
-  output_dir: "outputs/stylization-v2"
+  output_dir: "outputs/stylization-v3"
   logging_dir: "logs"
 
 model:

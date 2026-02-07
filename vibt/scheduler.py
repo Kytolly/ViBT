@@ -1,6 +1,7 @@
 from diffusers.schedulers import UniPCMultistepScheduler
 import torch
-
+import logging
+logging.getLogger().setLevel(logging.DEBUG)
 
 class ViBTScheduler(UniPCMultistepScheduler):
     def __init__(self, **kwargs):
@@ -20,7 +21,6 @@ class ViBTScheduler(UniPCMultistepScheduler):
             if any(self.timesteps < timestep)
             else -timestep - 1
         ) / 1000
-
         current_t = (timestep + 1) / 1000.0
         eta = (-delta_t * (current_t + delta_t) / current_t) ** 0.5
 
@@ -30,7 +30,7 @@ class ViBTScheduler(UniPCMultistepScheduler):
             device=sample.device,
             dtype=sample.dtype,
         )
-        # delta_t 似乎是负数 需要校验论文
+        # delta_t 似乎是负数 需要校验论文的公式
         latents = sample - delta_t * model_output + eta * self.noise_scale * noise
 
         return (latents,)

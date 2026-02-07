@@ -63,7 +63,7 @@ def main():
     
     # 可选覆盖参数 (如果不传则使用 config 中的默认值)
     parser.add_argument("--noise_scale", type=float, default=None, help="Overide noise_scale (e.g., 0.0 for ODE)")
-    parser.add_argument("--guidance_scale", type=float, default=5.0, help="CFG scale")
+    parser.add_argument("--guidance_scale", type=float, default=1.0, help="CFG scale")
     parser.add_argument("--num_steps", type=int, default=None, help="Inference steps")
     parser.add_argument("--use_lora", action="store_true", help="Force use LoRA (override config)")
     parser.add_argument("--full_ft", action="store_true", help="Force use Full FT (override config)")
@@ -202,10 +202,11 @@ def main():
 if __name__ == "__main__":
     '''
     python script/run_inference_for_style1000.py \
-    --checkpoint "outputs/stylization-v2/checkpoint_step_11000" \
+    --checkpoint "outputs/stylization-v2/checkpoint_step_26000" \
     --input_video "assets/1890934837-1-destyle.mp4" \
-    --prompt "Make it a Pixel Art." \
+    --prompt "A grand medieval castle perches atop a rocky cliff, its stone walls and turrets bathed in the warm glow of a setting sun. The sky transitions from deep orange near the horizon to a darker blue above, with scattered clouds reflecting the sunlight. Below, a bustling harbor teems with activity as numerous wooden ships, some with sails furled, line the water. Figures in period-appropriate attire stand on the decks, suggesting a gathering or event. A sturdy stone bridge with arched supports connects the castle to the mainland, adorned with flags fluttering in the breeze. The overall scene captures a moment of historical significance, blending natural beauty." \
     --noise_scale 1.0  \
+    --guidance_scale 1.0 \
     --num_steps 28 \
     --use_lora
     '''

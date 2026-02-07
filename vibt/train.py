@@ -113,12 +113,12 @@ class ViBTTrainer:
                 param.requires_grad = True
             self.params_to_optimize = list(self.model.transformer.parameters())
         
-        try:
-            torch._dynamo.config.suppress_errors = True
-            logger.info("⚡ Enabling torch.compile for Transformer...")
-            self.model.transformer = torch.compile(self.model.transformer, mode="default") 
-        except Exception as e:
-            logger.warning(f"⚠️ torch.compile failed: {e}. Falling back to eager mode.")
+        # try:
+        #     torch._dynamo.config.suppress_errors = True
+        #     logger.info("⚡ Enabling torch.compile for Transformer...")
+        #     self.model.transformer = torch.compile(self.model.transformer, mode="default") 
+        # except Exception as e:
+        #     logger.warning(f"⚠️ torch.compile failed: {e}. Falling back to eager mode.")
             
     def _setup_optimizer(self):
         opt_type = self.cfg.train.optimizer
@@ -325,7 +325,7 @@ class ViBTTrainer:
                 shift_gamma=self.cfg.inference.shift_gamma, 
                 seed=self.cfg.inference.seed
             )
-            scheduler.set_timesteps(20, device=self.device)
+            scheduler.set_timesteps(self.cfg.inference.num_inference_steps, device=self.device)
             
             curr = source_latent.clone()
             prompt_emb = self.model.encode_prompt([prompt])

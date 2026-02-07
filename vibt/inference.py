@@ -18,7 +18,7 @@ def generate_vibt(
     device: str = "cuda",
     shift_gamma: float = 5.0,
     noise_scale: float = 1.0,
-    guidance_scale: float = 1.5,
+    guidance_scale: float = 1.0,
     seed: int = 42
 ):
     """
